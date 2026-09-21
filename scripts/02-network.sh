@@ -10,7 +10,7 @@ command -v nmcli >/dev/null 2>&1 || die "NetworkManager/nmcli is not available."
 
 mapfile -t active_connections < <(
     nmcli -t -f NAME,DEVICE,TYPE connection show --active |
-    awk -F: '$3=="ethernet" || $3=="wifi" {print $1 "|" $2}'
+    awk -F: '$3=="802-3-ethernet" || $3=="wifi" {print $1 "|" $2}'
 )
 
 if ((${#active_connections[@]} == 0)); then
