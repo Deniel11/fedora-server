@@ -54,22 +54,48 @@ warn "Changing the network configuration may disconnect an SSH session."
 warn "If you are connected remotely, make sure you can reconnect using the new IP."
 echo
 
-read -r -p "Static IPv4 [${current_ip:-192.168.1.50}]: " STATIC_IP
-STATIC_IP="${STATIC_IP:-${current_ip:-192.168.1.50}}"
-valid_ipv4 "$STATIC_IP" || die "Invalid IPv4 address."
+echo
+echo "Current network configuration:"
+echo "  Connection : $CONNECTION_NAME"
+echo "  Interface  : $INTERFACE"
+echo "  IPv4       : ${current_ip:-not set}/${current_prefix:-?}"
+echo "  Gateway    : ${current_gateway:-not set}"
+echo "  DNS        : ${current_dns:-not set}"
+echo
 
-read -r -p "Prefix length [${current_prefix:-24}]: " PREFIX
-PREFIX="${PREFIX:-${current_prefix:-24}}"
-valid_prefix "$PREFIX" || die "Invalid prefix length."
+read -r -p "Is the current network configuration OK? [Y/n]: " keep_current
+keep_current="${keep_current:-Y}"
 
-read -r -p "Gateway [${current_gateway:-192.168.1.1}]: " GATEWAY
-GATEWAY="${GATEWAY:-${current_gateway:-192.168.1.1}}"
-valid_ipv4 "$GATEWAY" || die "Invalid gateway IPv4 address."
+if [[ "$keep_current" =~ ^[Yy]$ ]]; then
+    STATIC_IP="$current_ip"
+    PREFIX="$current_prefix"
+    GATEWAY="$current_gateway"
+    DNS_SERVER="$current_dns"
 
-read -r -p "DNS server [${current_dns:-1.1.1.1}]: " DNS_SERVER
-DNS_SERVER="${DNS_SERVER:-${current_dns:-1.1.1.1}}"
-valid_ipv4 "$DNS_SERVER" || die "Invalid DNS server IPv4 address."
+    [[ -n "$STATIC_IP" ]] || die "Current IPv4 address is not available."
+    [[ -n "$PREFIX" ]] || die "Current prefix length is not available."
+    [[ -n "$GATEWAY" ]] || die "Current gateway is not available."
+    [[ -n "$DNS_SERVER" ]] || die "Current DNS server is not available."
 
+    log "Keeping the current network configuration."
+else
+    echo
+    read -r -p "Static IPv4 [${current_ip:-192.168.1.50}]: " STATIC_IP
+    STATIC_IP="${STATIC_IP:-${current_ip:-192.168.1.50}}"
+    valid_ipv4 "$STATIC_IP" || die "Invalid IPv4 address."
+
+    read -r -p "Prefix length [${current_prefix:-24}]: " PREFIX
+    PREFIX="${PREFIX:-${current_prefix:-24}}"
+    valid_prefix "$PREFIX" || die "Invalid prefix length."
+
+    read -r -p "Gateway [${current_gateway:-192.168.1.1}]: " GATEWAY
+    GATEWAY="${GATEWAY:-${current_gateway:-192.168.1.1}}"
+    valid_ipv4 "$GATEWAY" || die "Invalid gateway IPv4 address."
+
+    read -r -p "DNS server [${current_dns:-1.1.1.1}]: " DNS_SERVER
+    DNS_SERVER="${DNS_SERVER:-${current_dns:-1.1.1.1}}"
+    valid_ipv4 "$DNS_SERVER" || die "Invalid DNS server IPv4 address."
+fi
 echo
 echo "Selected configuration:"
 echo "  Connection : $CONNECTION_NAME"
