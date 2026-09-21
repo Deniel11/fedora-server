@@ -13,7 +13,11 @@ require_fedora
 
 dnf install -y dnf-plugins-core
 
-if ! grep -Rqs 'download.docker.com/linux/fedora/docker-ce.repo' /etc/yum.repos.d 2>/dev/null; then
+DOCKER_REPO="/etc/yum.repos.d/docker-ce.repo"
+
+if [[ -f "$DOCKER_REPO" ]]; then
+    log "Docker repository already exists, skipping repository setup."
+else
     dnf config-manager addrepo \
         --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo
 fi
