@@ -65,9 +65,13 @@ Git is **not required** on the Fedora server.
 For a public GitHub repository:
 
 ```bash
-curl -L https://github.com/OWNER/REPO/archive/refs/heads/main.tar.gz -o setup.tar.gz
-tar -xzf setup.tar.gz
-cd REPO-main
+curl -fL https://github.com/Deniel11/fedora-server/archive/refs/heads/main.tar.gz \
+  -o /tmp/fedora-server.tar.gz
+
+tar -xzf /tmp/fedora-server.tar.gz -C /tmp
+
+cd /tmp/fedora-server-main
+
 sudo ./install.sh
 ```
 
@@ -75,8 +79,8 @@ You can also use Git if you want to maintain the repository locally:
 
 ```bash
 sudo dnf install -y git
-git clone https://github.com/OWNER/REPO.git
-cd REPO
+git clone https://github.com/Deniel11/fedora-server.git
+cd fedora-server
 sudo ./install.sh
 ```
 
