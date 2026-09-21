@@ -1,0 +1,20 @@
+# Generated runtime state
+secrets/
+*.key
+*.crt
+*.cert
+*.csr
+*.srl
+
+# Local configuration / secrets
+.env
+.env.*
+!.env.example
+
+# Vaultwarden runtime data
+docker/vaultwarden/data/
+
+# Logs / editor files
+*.log
+*.swp
+.DS_Store
