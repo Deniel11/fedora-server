@@ -26,6 +26,12 @@ services:
       - "127.0.0.1:3012:3012"
 EOF
 
+if docker inspect -f '{{.State.Running}}' vaultwarden 2>/dev/null | grep -qx true &&
+   curl -fsS http://127.0.0.1:8080/alive >/dev/null 2>&1; then
+    log "Vaultwarden is already running and responding; skipping recreate."
+    exit 0
+fi
+
 docker compose -f "${VW_DIR}/compose.yml" up -d
 
 for _ in {1..30}; do

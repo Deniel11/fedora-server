@@ -19,16 +19,13 @@ require_root() {
 
 require_fedora() {
     [[ -r /etc/os-release ]] || die "/etc/os-release not found."
-    # shellcheck disable=SC1091
     source /etc/os-release
     [[ "${ID:-}" == "fedora" ]] || die "This repository supports Fedora Server only. Detected: ${ID:-unknown}"
 }
 
 load_config() {
     [[ -f "$CONFIG_FILE" ]] || die "Missing config: $CONFIG_FILE"
-    # shellcheck disable=SC1090
     source "$CONFIG_FILE"
-
     : "${FEDORA_DOMAIN:?FEDORA_DOMAIN is not set}"
     : "${PORTAINER_DOMAIN:?PORTAINER_DOMAIN is not set}"
     : "${VAULTWARDEN_DOMAIN:?VAULTWARDEN_DOMAIN is not set}"

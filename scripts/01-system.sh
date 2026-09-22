@@ -8,24 +8,24 @@ load_config
 ensure_dirs
 
 log "Installing base packages"
-
 dnf install -y \
-    ca-certificates \
-    curl \
-    firewalld \
-    openssl \
-    tar \
-    unzip \
-    policycoreutils-python-utils \
-    nginx \
-    cockpit
+    ca-certificates curl firewalld openssl tar unzip \
+    policycoreutils-python-utils nginx cockpit
 
 systemctl enable --now firewalld
 
-# Nginx will terminate HTTP/HTTPS. Cockpit remains directly reachable on 9090.
-firewall-cmd --permanent --add-service=http
-firewall-cmd --permanent --add-service=https
-firewall-cmd --permanent --add-service=cockpit
-firewall-cmd --reload
+changed=0
+for service in http https cockpit; do
+    if ! firewall-cmd --permanent --query-service="$service" >/dev/null 2>&1; then
+        firewall-cmd --permanent --add-service="$service"
+        changed=1
+    fi
+done
+
+if (( changed )); then
+    firewall-cmd --reload
+else
+    log "Firewall rules already configured; skipping reload."
+fi
 
 log "Base system preparation complete."

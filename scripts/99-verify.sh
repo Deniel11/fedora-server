@@ -7,12 +7,10 @@ require_fedora
 load_config
 
 [[ -f "$NETWORK_STATE" ]] || die "Network state not found."
-# shellcheck disable=SC1090
 source "$NETWORK_STATE"
 
 PROXMOX_IP="not-set"
 if [[ -f "$PROXMOX_STATE" ]]; then
-    # shellcheck disable=SC1090
     source "$PROXMOX_STATE"
 fi
 
@@ -21,6 +19,7 @@ echo "========================================"
 echo " Verification"
 echo "========================================"
 
+FAILURES=0
 check() {
     local label="$1"
     shift
@@ -28,6 +27,7 @@ check() {
         printf '[ OK ] %s\n' "$label"
     else
         printf '[FAIL] %s\n' "$label"
+        FAILURES=$((FAILURES + 1))
     fi
 }
 
@@ -38,15 +38,21 @@ check "Portainer container" docker inspect -f '{{.State.Running}}' portainer
 check "Vaultwarden container" docker inspect -f '{{.State.Running}}' vaultwarden
 check "Nginx configuration" nginx -t
 
-curl -kfsS --resolve "${PORTAINER_DOMAIN}:443:${STATIC_IP}" \
-    "https://${PORTAINER_DOMAIN}/" >/dev/null 2>&1 &&
-    printf '[ OK ] Portainer HTTPS\n' ||
-    printf '[WARN] Portainer HTTPS check failed\n'
+if curl -kfsS --resolve "${PORTAINER_DOMAIN}:443:${STATIC_IP}" \
+    "https://${PORTAINER_DOMAIN}/" >/dev/null 2>&1; then
+    printf '[ OK ] Portainer HTTPS\n'
+else
+    printf '[FAIL] Portainer HTTPS check failed\n'
+    FAILURES=$((FAILURES + 1))
+fi
 
-curl -kfsS --resolve "${VAULTWARDEN_DOMAIN}:443:${STATIC_IP}" \
-    "https://${VAULTWARDEN_DOMAIN}/alive" >/dev/null 2>&1 &&
-    printf '[ OK ] Vaultwarden HTTPS\n' ||
-    printf '[WARN] Vaultwarden HTTPS check failed\n'
+if curl -kfsS --resolve "${VAULTWARDEN_DOMAIN}:443:${STATIC_IP}" \
+    "https://${VAULTWARDEN_DOMAIN}/alive" >/dev/null 2>&1; then
+    printf '[ OK ] Vaultwarden HTTPS\n'
+else
+    printf '[FAIL] Vaultwarden HTTPS check failed\n'
+    FAILURES=$((FAILURES + 1))
+fi
 
 echo
 echo "========================================"
@@ -72,3 +78,10 @@ echo "Local CA:"
 echo "  ${TLS_DIR}/ca.crt"
 echo
 warn "Import ca.crt into client trust stores to remove HTTPS trust warnings."
+
+if (( FAILURES > 0 )); then
+    printf '\n[ERROR] Verification failed: %d check(s) failed.\n' "$FAILURES" >&2
+    exit 1
+fi
+
+printf '\n[ OK ] All critical verification checks passed.\n'

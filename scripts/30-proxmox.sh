@@ -9,7 +9,6 @@ ensure_dirs
 
 previous=""
 if [[ -f "$PROXMOX_STATE" ]]; then
-    # shellcheck disable=SC1090
     source "$PROXMOX_STATE"
     previous="${PROXMOX_IP:-}"
 fi
@@ -19,9 +18,26 @@ echo "Proxmox is NOT proxied by Fedora Nginx."
 echo "The Proxmox host keeps its own HTTPS service (normally TCP 8006)."
 echo
 
-read -r -p "Proxmox IPv4 address [${previous:-192.168.1.10}]: " PROXMOX_IP
-PROXMOX_IP="${PROXMOX_IP:-${previous:-192.168.1.10}}"
+if [[ -n "$previous" ]]; then
+    read -r -p "Current configured Proxmox IP: ${previous}"$'\n'"Is the current Proxmox IP address OK? [Y/n]: " keep
+    keep="${keep:-Y}"
+    if [[ "$keep" =~ ^[Yy]$ ]]; then
+        PROXMOX_IP="$previous"
+    else
+        read -r -p "New Proxmox IPv4 address [${previous}]: " PROXMOX_IP
+        PROXMOX_IP="${PROXMOX_IP:-$previous}"
+    fi
+else
+    read -r -p "Proxmox IPv4 address [192.168.1.10]: " PROXMOX_IP
+    PROXMOX_IP="${PROXMOX_IP:-192.168.1.10}"
+fi
+
 valid_ipv4 "$PROXMOX_IP" || die "Invalid Proxmox IPv4 address."
+
+if [[ -n "$previous" && "$PROXMOX_IP" == "$previous" ]]; then
+    log "Proxmox IP is unchanged; no update required."
+    exit 0
+fi
 
 cat > "$PROXMOX_STATE" <<EOF
 PROXMOX_IP=$(printf '%q' "$PROXMOX_IP")

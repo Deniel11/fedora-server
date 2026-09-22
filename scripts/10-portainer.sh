@@ -25,6 +25,12 @@ volumes:
   portainer_data:
 EOF
 
+if docker inspect -f '{{.State.Running}}' portainer 2>/dev/null | grep -qx true &&
+   curl -kfsS https://127.0.0.1:9443/ >/dev/null 2>&1; then
+    log "Portainer is already running and responding; skipping recreate."
+    exit 0
+fi
+
 docker compose -f "${PORTAINER_DIR}/compose.yml" up -d
 
 for _ in {1..30}; do

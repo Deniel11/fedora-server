@@ -8,7 +8,6 @@ load_config
 ensure_dirs
 
 [[ -f "$NETWORK_STATE" ]] || die "Network state missing. Run 02-network.sh first."
-# shellcheck disable=SC1090
 source "$NETWORK_STATE"
 
 valid_ipv4 "$STATIC_IP" || die "Invalid stored Fedora IP: $STATIC_IP"
@@ -23,20 +22,15 @@ generate_ca() {
     log "Generating local Certificate Authority"
     openssl genrsa -out "$CA_KEY" 4096
     chmod 600 "$CA_KEY"
-    openssl req -x509 -new -sha256 \
-        -key "$CA_KEY" \
-        -out "$CA_CERT" \
-        -days 3650 \
-        -subj "/C=XX/O=Home Lab/CN=Home Lab Local CA"
+    openssl req -x509 -new -sha256 -key "$CA_KEY" -out "$CA_CERT" \
+        -days 3650 -subj "/C=XX/O=Home Lab/CN=Home Lab Local CA"
     chmod 644 "$CA_CERT"
 }
 
 [[ -s "$CA_KEY" && -s "$CA_CERT" ]] || generate_ca
 
 generate_leaf() {
-    local name="$1"
-    local domain="$2"
-    local ip="$3"
+    local name="$1" domain="$2" ip="$3"
     local key="${TLS_DIR}/${name}.key"
     local cert="${TLS_DIR}/${name}.crt"
     local csr="${TLS_DIR}/${name}.csr"
@@ -50,25 +44,13 @@ subjectAltName=DNS:${domain},IP:${ip}
 EOF
 
     openssl genrsa -out "$key" 2048
-
-    openssl req -new \
-        -key "$key" \
-        -out "$csr" \
+    openssl req -new -key "$key" -out "$csr" \
         -subj "/C=XX/O=Home Lab/CN=${domain}"
-
-    openssl x509 -req \
-        -in "$csr" \
-        -CA "$CA_CERT" \
-        -CAkey "$CA_KEY" \
-        -CAcreateserial \
-        -out "$cert" \
-        -days 365 \
-        -sha256 \
-        -extfile "$ext"
+    openssl x509 -req -in "$csr" -CA "$CA_CERT" -CAkey "$CA_KEY" \
+        -CAcreateserial -out "$cert" -days 365 -sha256 -extfile "$ext"
 
     chmod 600 "$key"
     chmod 644 "$cert"
-
     rm -f "$csr" "$ext" "${TLS_DIR}/ca.srl"
 }
 
@@ -76,10 +58,8 @@ needs_regeneration() {
     local cert="$1" domain="$2" ip="$3"
     [[ -s "$cert" ]] || return 0
     openssl x509 -checkend $((30*86400)) -noout -in "$cert" >/dev/null 2>&1 || return 0
-    openssl x509 -in "$cert" -noout -ext subjectAltName |
-        grep -Fq "DNS:${domain}" || return 0
-    openssl x509 -in "$cert" -noout -ext subjectAltName |
-        grep -Fq "IP Address:${ip}" || return 0
+    openssl x509 -in "$cert" -noout -ext subjectAltName | grep -Fq "DNS:${domain}" || return 0
+    openssl x509 -in "$cert" -noout -ext subjectAltName | grep -Fq "IP Address:${ip}" || return 0
     return 1
 }
 
@@ -97,6 +77,8 @@ do
         log "Generating/updating certificate for ${domain}"
         rm -f "$key" "$cert"
         generate_leaf "$name" "$domain" "$STATIC_IP"
+    else
+        log "Certificate for ${domain} is current; skipping regeneration."
     fi
 done
 
