@@ -8,5 +8,5 @@ load_config
 load_app_config "vaultwarden"
 
 app_is_running vaultwarden || die "${APP_NAME} container is not running."
-curl -fsS --max-time 10 "http://127.0.0.1:${VAULTWARDEN_PORT}/alive" >/dev/null || die "${APP_NAME} local health check failed."
+curl -sS --max-time 10 "http://127.0.0.1:${VAULTWARDEN_PORT}/alive" >/dev/null || die "${APP_NAME} local health check failed."
 log "${APP_NAME} health check passed."
