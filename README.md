@@ -40,23 +40,110 @@ Until AdGuard is ready, the services are still reachable by IP. For clean hostna
 
 ## First-install flow
 
-The top-level installer is:
+The repository uses two separate stages:
+
+1. `bootstrap.sh` downloads the repository without Git and installs the repository files under `/opt/fedora-server-setup`.
+2. `install.sh` performs the actual Fedora Server setup.
+
+The existing `install.sh` remains the main system installer.
+
+### Bootstrap
+
+Git is not required on the Fedora server.
+
+From a fresh Fedora Server installation, run:
 
 ```bash
-sudo ./install.sh
+curl -fL https://raw.githubusercontent.com/Deniel11/fedora-server/main/bootstrap.sh \
+  -o /tmp/bootstrap.sh
+
+chmod +x /tmp/bootstrap.sh
+
+sudo /tmp/bootstrap.sh
 ```
 
-Before installing anything, it checks whether Fedora has pending updates.
+The bootstrap script:
 
-If updates are available, the installer **updates the operating system first and stops**. This is intentional: after the update, reboot if Fedora requests it, then run:
+* downloads the `main` branch as a tar archive
+* stores the archive temporarily under `/tmp`
+* extracts the repository into a temporary directory
+* installs the repository under `/opt/fedora-server-setup`
+* makes the repository scripts executable
+* removes the temporary archive and extracted files
+
+After bootstrap completes, run the main installer:
 
 ```bash
-sudo ./install.sh
+sudo /opt/fedora-server-setup/install.sh
 ```
 
-again.
+If Fedora has pending system updates, `install.sh` handles the update-first workflow described above.
 
-This prevents the service installation from continuing on an outdated base system.
+## Updating the repository
+
+After the initial bootstrap, the repository can be updated without Git.
+
+Run:
+
+```bash
+sudo /opt/fedora-server-setup/update-repo.sh
+```
+
+The update script:
+
+* downloads the latest `main` branch from GitHub
+* stores the archive temporarily under `/tmp`
+* extracts the new repository to a temporary directory
+* updates the repository files under `/opt/fedora-server-setup`
+* keeps runtime data and configuration outside the repository untouched
+* removes the temporary files when finished
+
+The existing installation is not removed before the update.
+
+After updating, if the installer or setup scripts changed, run:
+
+```bash
+sudo /opt/fedora-server-setup/install.sh
+```
+
+The installer is designed to be rerunnable and will skip or preserve components that are already correctly configured.
+
+### Complete workflow
+
+Fresh server:
+
+```text
+Fresh Fedora Server
+        |
+        v
+   bootstrap.sh
+        |
+        v
+/opt/fedora-server-setup
+        |
+        v
+     install.sh
+        |
+        v
+Running home services
+```
+
+Later repository updates:
+
+```text
+GitHub main
+     |
+     v
+update-repo.sh
+     |
+     v
+/opt/fedora-server-setup
+     |
+     v
+install.sh (when required)
+```
+
+The repository update mechanism does not require Git to be installed on the server.
 
 ## Download without Git
 
