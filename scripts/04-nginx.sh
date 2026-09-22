@@ -10,6 +10,15 @@ ensure_dirs
 install -d -m 0755 /etc/nginx/conf.d
 TLS_DIR="/etc/fedora-server-setup/tls"
 
+# Nginx needs permission to connect to the local Docker-published
+# application ports when SELinux is enforcing.
+if command -v getsebool >/dev/null 2>&1 && command -v setsebool >/dev/null 2>&1; then
+    if getsebool httpd_can_network_connect 2>/dev/null | grep -q -- ' --> off$'; then
+        log "Enabling SELinux httpd_can_network_connect for Nginx reverse proxy."
+        setsebool -P httpd_can_network_connect 1
+    fi
+fi
+
 cat > /etc/nginx/conf.d/portainer.conf <<EOF
 server {
     listen 80;
@@ -17,7 +26,8 @@ server {
     return 301 https://\$host\$request_uri;
 }
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
+    http2 on;
     server_name ${PORTAINER_DOMAIN};
     ssl_certificate ${TLS_DIR}/portainer.crt;
     ssl_certificate_key ${TLS_DIR}/portainer.key;
@@ -44,7 +54,8 @@ server {
     return 301 https://\$host\$request_uri;
 }
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
+    http2 on;
     server_name ${VAULTWARDEN_DOMAIN};
     ssl_certificate ${TLS_DIR}/vaultwarden.crt;
     ssl_certificate_key ${TLS_DIR}/vaultwarden.key;
