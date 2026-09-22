@@ -22,7 +22,7 @@ The intended names are:
 | Name | Destination |
 |---|---|
 | `proxmox.home` | Proxmox directly, using Proxmox's own HTTPS UI |
-| `fedora-server.home` | Fedora server, Cockpit on `https://fedora-server.home:9090` |
+| `fedora-server.home` | Fedora server, Cockpit on `https://fedora-server.home:<FEDORA_PORT>` |
 | `portainer.home` | Fedora server, Nginx -> Portainer |
 | `vault.home` | Fedora server, Nginx -> Vaultwarden |
 | `joplin.home` | Fedora server, Nginx -> Joplin |
@@ -205,7 +205,7 @@ HTTPS certificates contain both the configured hostname and the Fedora static IP
 Examples:
 
 ```text
-https://FEDORA_STATIC_IP:9090
+https://FEDORA_STATIC_IP:<FEDORA_PORT>
 https://FEDORA_STATIC_IP
 ```
 
@@ -255,17 +255,22 @@ Do not put passwords, private keys, or tokens in this repository.
 
 ## Ports
 
-| Service | Address |
-|---|---|
-| Proxmox | Proxmox host, normally TCP 8006 |
-| Nginx HTTP | TCP 80, redirects to HTTPS |
-| Nginx HTTPS | TCP 443 |
-| Cockpit | TCP 9090 |
-| Portainer internal | `127.0.0.1:9443` |
-| Vaultwarden internal | `127.0.0.1:8080` |
-| Joplin internal | `127.0.0.1:22300` |
+Service ports are centrally configured in [`config/domains.conf`](config/domains.conf).
 
-Portainer and Vaultwarden are intentionally bound to localhost on the Fedora host. Clients should reach them through Nginx.
+| Service | Config variable | Default |
+|---|---|---:|
+| Proxmox | `PROXMOX_PORT` | 8006 |
+| Cockpit | `FEDORA_PORT` | 9090 |
+| Portainer | `PORTAINER_PORT` | 9443 |
+| Vaultwarden | `VAULTWARDEN_PORT` | 8080 |
+| Vaultwarden Notifications | `VAULTWARDEN_NOTIFICATIONS_HUB_PORT` | 3012 |
+| Joplin | `JOPLIN_PORT` | 22300 |
+
+Portainer, Vaultwarden and Joplin are intentionally bound to localhost on the Fedora host. Clients should reach them through Nginx.
+
+> If you change a service port, update it only in `config/domains.conf`.
+
+> The installation scripts use these values automatically.
 
 ## Security notes
 

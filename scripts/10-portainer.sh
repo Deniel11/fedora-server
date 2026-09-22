@@ -10,14 +10,14 @@ ensure_dirs
 PORTAINER_DIR="${STACK_DIR}/docker/portainer"
 mkdir -p "$PORTAINER_DIR"
 
-cat > "${PORTAINER_DIR}/compose.yml" <<'EOF'
+cat > "${PORTAINER_DIR}/compose.yml" <<EOF
 services:
   portainer:
-    image: ${PORTAINER_IMAGE:-portainer/portainer-ce:latest}
+    image: \${PORTAINER_IMAGE:-portainer/portainer-ce:latest}
     container_name: portainer
     restart: unless-stopped
     ports:
-      - "127.0.0.1:9443:9443"
+      - "127.0.0.1:${PORTAINER_PORT}:9443"
     volumes:
       - portainer_data:/data
       - /var/run/docker.sock:/var/run/docker.sock
@@ -26,7 +26,7 @@ volumes:
 EOF
 
 if docker inspect -f '{{.State.Running}}' portainer 2>/dev/null | grep -qx true &&
-   curl -kfsS https://127.0.0.1:9443/ >/dev/null 2>&1; then
+   curl -kfsS https://127.0.0.1:${PORTAINER_PORT}/ >/dev/null 2>&1; then
     log "Portainer is already running and responding; skipping recreate."
     exit 0
 fi
@@ -34,8 +34,8 @@ fi
 docker compose -f "${PORTAINER_DIR}/compose.yml" up -d
 
 for _ in {1..30}; do
-    if curl -kfsS https://127.0.0.1:9443/ >/dev/null 2>&1; then
-        log "Portainer is responding on localhost:9443."
+    if curl -kfsS https://127.0.0.1:${PORTAINER_PORT}/ >/dev/null 2>&1; then
+        log "Portainer is responding on localhost:${PORTAINER_PORT}."
         exit 0
     fi
     sleep 2

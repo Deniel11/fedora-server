@@ -15,7 +15,7 @@ fi
 
 echo
 echo "Proxmox is NOT proxied by Fedora Nginx."
-echo "The Proxmox host keeps its own HTTPS service (normally TCP 8006)."
+echo "The Proxmox host keeps its own HTTPS service (normally TCP ${PROXMOX_PORT})."
 echo
 
 if [[ -n "$previous" ]]; then

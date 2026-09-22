@@ -11,7 +11,6 @@ JOPLIN_DIR="${STACK_DIR}/docker/joplin"
 JOPLIN_ENV="${STATE_DIR}/joplin.env"
 JOPLIN_COMPOSE="${JOPLIN_DIR}/compose.yml"
 
-JOPLIN_PORT="22300"
 POSTGRES_IMAGE="postgres:16"
 JOPLIN_IMAGE="joplin/server:latest"
 
@@ -97,7 +96,7 @@ EOF
     echo
 fi
 
-cat > "${JOPLIN_COMPOSE}" <<'EOF'
+cat > "${JOPLIN_COMPOSE}" <<EOF
 services:
   joplin-postgres:
     image: postgres:16
@@ -128,7 +127,7 @@ services:
     env_file:
       - /etc/fedora-server-setup/joplin.env
     ports:
-      - "127.0.0.1:22300:22300"
+      - "127.0.0.1:${JOPLIN_PORT}:22300"
 EOF
 
 chmod 600 "${JOPLIN_COMPOSE}"

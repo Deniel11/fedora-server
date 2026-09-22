@@ -25,12 +25,17 @@ require_fedora() {
 
 load_config() {
     [[ -f "$CONFIG_FILE" ]] || die "Missing config: $CONFIG_FILE"
+
+    local config_vars
+    config_vars=$(grep -E '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=' "$CONFIG_FILE" \
+        | sed -E 's/^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*).*/\1/')
+
     source "$CONFIG_FILE"
-    : "${PROXMOX_DOMAIN:?PROXMOX_DOMAIN is not set}"
-    : "${FEDORA_DOMAIN:?FEDORA_DOMAIN is not set}"
-    : "${PORTAINER_DOMAIN:?PORTAINER_DOMAIN is not set}"
-    : "${VAULTWARDEN_DOMAIN:?VAULTWARDEN_DOMAIN is not set}"
-    : "${JOPLIN_DOMAIN:?JOPLIN_DOMAIN is not set}"
+
+    local var
+    for var in $config_vars; do
+        [[ -n "${!var:-}" ]] || die "$var is not set"
+    done
 }
 
 run_stage() {

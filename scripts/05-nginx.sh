@@ -34,7 +34,7 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     client_max_body_size 128m;
     location / {
-        proxy_pass https://127.0.0.1:9443;
+        proxy_pass https://127.0.0.1:${PORTAINER_PORT};
         proxy_ssl_verify off;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -62,7 +62,7 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     client_max_body_size 128m;
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:${VAULTWARDEN_PORT};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -72,7 +72,7 @@ server {
         proxy_set_header Connection "upgrade";
     }
     location /notifications/hub {
-        proxy_pass http://127.0.0.1:3012;
+        proxy_pass http://127.0.0.1:${VAULTWARDEN_NOTIFICATIONS_HUB_PORT};
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
@@ -104,7 +104,7 @@ server {
     client_max_body_size 128m;
 
     location / {
-        proxy_pass http://127.0.0.1:22300;
+        proxy_pass http://127.0.0.1:${JOPLIN_PORT};
 
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;

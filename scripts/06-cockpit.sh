@@ -31,4 +31,4 @@ if command -v /usr/libexec/cockpit-certificate-ensure >/dev/null 2>&1; then
     /usr/libexec/cockpit-certificate-ensure --check || true
 fi
 
-log "Cockpit is available at https://${FEDORA_DOMAIN}:9090"
+log "Cockpit is available at https://${FEDORA_DOMAIN}:${FEDORA_PORT}"
