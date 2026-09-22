@@ -26,10 +26,11 @@ require_fedora() {
 load_config() {
     [[ -f "$CONFIG_FILE" ]] || die "Missing config: $CONFIG_FILE"
     source "$CONFIG_FILE"
+    : "${PROXMOX_DOMAIN:?PROXMOX_DOMAIN is not set}"
     : "${FEDORA_DOMAIN:?FEDORA_DOMAIN is not set}"
     : "${PORTAINER_DOMAIN:?PORTAINER_DOMAIN is not set}"
     : "${VAULTWARDEN_DOMAIN:?VAULTWARDEN_DOMAIN is not set}"
-    : "${PROXMOX_DOMAIN:?PROXMOX_DOMAIN is not set}"
+    : "${JOPLIN_DOMAIN:?JOPLIN_DOMAIN is not set}"
 }
 
 run_stage() {

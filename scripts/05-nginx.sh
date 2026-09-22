@@ -82,6 +82,40 @@ server {
 }
 EOF
 
+cat > /etc/nginx/conf.d/joplin.conf <<EOF
+server {
+    listen 80;
+    server_name ${JOPLIN_DOMAIN};
+
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+
+    server_name ${JOPLIN_DOMAIN};
+
+    ssl_certificate ${TLS_DIR}/joplin.crt;
+    ssl_certificate_key ${TLS_DIR}/joplin.key;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    client_max_body_size 128m;
+
+    location / {
+        proxy_pass http://127.0.0.1:22300;
+
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        proxy_http_version 1.1;
+    }
+}
+EOF
+
 nginx -t
 
 if systemctl is-active --quiet nginx; then

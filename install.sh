@@ -35,14 +35,15 @@ else
 fi
 
 run_stage "01-system.sh"
-run_stage "02-network.sh"
-run_stage "03-docker.sh"
+run_stage "02-proxmox.sh"
+run_stage "03-network.sh"
+run_stage "04-docker.sh"
 run_stage "40-certificates.sh"
-run_stage "04-nginx.sh"
-run_stage "05-cockpit.sh"
+run_stage "05-nginx.sh"
+run_stage "06-cockpit.sh"
 run_stage "10-portainer.sh"
 run_stage "20-vaultwarden.sh"
-run_stage "30-proxmox.sh"
+run_stage "30-joplin.sh"
 run_stage "99-verify.sh"
 
 log "Installation completed."

@@ -11,7 +11,7 @@ ensure_dirs
 source "$NETWORK_STATE"
 
 valid_ipv4 "$STATIC_IP" || die "Invalid stored Fedora IP: $STATIC_IP"
-for domain in "$FEDORA_DOMAIN" "$PORTAINER_DOMAIN" "$VAULTWARDEN_DOMAIN" "$PROXMOX_DOMAIN"; do
+for domain in "$PROXMOX_DOMAIN" "$FEDORA_DOMAIN" "$PORTAINER_DOMAIN" "$VAULTWARDEN_DOMAIN" "$JOPLIN_DOMAIN"; do
     valid_hostname "$domain" || die "Invalid hostname in config: $domain"
 done
 
@@ -66,7 +66,8 @@ needs_regeneration() {
 for spec in \
     "fedora-server:${FEDORA_DOMAIN}" \
     "portainer:${PORTAINER_DOMAIN}" \
-    "vaultwarden:${VAULTWARDEN_DOMAIN}"
+    "vaultwarden:${VAULTWARDEN_DOMAIN}"\
+    "joplin:${JOPLIN_DOMAIN}"
 do
     name="${spec%%:*}"
     domain="${spec#*:}"

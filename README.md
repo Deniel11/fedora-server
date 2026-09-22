@@ -10,6 +10,7 @@ Automated, rerunnable setup for a fresh Fedora Server VM on Proxmox.
 - Cockpit
 - Portainer CE
 - Vaultwarden
+- Joplin - note taking app
 - a local Certificate Authority and HTTPS certificates
 - firewall rules for HTTP/HTTPS and Cockpit
 - Proxmox IP configuration record for later AdGuard DNS setup
@@ -20,20 +21,22 @@ The intended names are:
 
 | Name | Destination |
 |---|---|
+| `proxmox.home` | Proxmox directly, using Proxmox's own HTTPS UI |
 | `fedora-server.home` | Fedora server, Cockpit on `https://fedora-server.home:9090` |
 | `portainer.home` | Fedora server, Nginx -> Portainer |
 | `vault.home` | Fedora server, Nginx -> Vaultwarden |
-| `proxmox.home` | Proxmox directly, using Proxmox's own HTTPS UI |
+| `joplin.home` | Fedora server, Nginx -> Joplin |
 
 The Fedora Nginx server does **not** proxy Fedora/Cockpit or Proxmox.
 
 DNS is deliberately not installed here. Later, configure these records in AdGuard:
 
 ```text
+proxmox.home       -> PROXMOX_IP
 fedora-server.home -> FEDORA_STATIC_IP
 portainer.home     -> FEDORA_STATIC_IP
 vault.home         -> FEDORA_STATIC_IP
-proxmox.home       -> PROXMOX_IP
+joplin.home        -> FEDORA_STATIC_IP
 ```
 
 Until AdGuard is ready, the services are still reachable by IP. For clean hostname-based HTTPS testing before DNS exists, use a temporary hosts entry or `curl --resolve`.
@@ -217,13 +220,14 @@ If an IP changes, rerun the installer. The certificate script detects the curren
 | `install.sh` | Main orchestrator and update-first gate |
 | `scripts/00-common.sh` | Shared functions, paths, validation |
 | `scripts/01-system.sh` | Base packages, firewall, system preparation |
-| `scripts/02-network.sh` | Interactive static IPv4 configuration |
-| `scripts/03-docker.sh` | Official Docker Engine repository + Docker/Compose |
-| `scripts/04-nginx.sh` | Nginx installation and HTTPS reverse proxy |
-| `scripts/05-cockpit.sh` | Cockpit installation and firewall |
+| `scripts/02-proxmox.sh` | Interactive Proxmox IP record |
+| `scripts/03-network.sh` | Interactive static IPv4 configuration |
+| `scripts/04-docker.sh` | Official Docker Engine repository + Docker/Compose |
+| `scripts/05-nginx.sh` | Nginx installation and HTTPS reverse proxy |
+| `scripts/06-cockpit.sh` | Cockpit installation and firewall |
 | `scripts/10-portainer.sh` | Portainer Compose deployment |
 | `scripts/20-vaultwarden.sh` | Vaultwarden Compose deployment |
-| `scripts/30-proxmox.sh` | Interactive Proxmox IP record |
+| `scripts/30-joplin.sh` | Joplin Server + PostgreSQL deployment |
 | `scripts/40-certificates.sh` | Local CA and service certificates |
 | `scripts/99-verify.sh` | Final health checks and DNS instructions |
 
@@ -240,10 +244,11 @@ before installation if you want different internal hostnames.
 The default configuration is:
 
 ```text
+proxmox.home
 fedora-server.home
 portainer.home
 vault.home
-proxmox.home
+joplin.home
 ```
 
 Do not put passwords, private keys, or tokens in this repository.
@@ -252,12 +257,13 @@ Do not put passwords, private keys, or tokens in this repository.
 
 | Service | Address |
 |---|---|
+| Proxmox | Proxmox host, normally TCP 8006 |
 | Nginx HTTP | TCP 80, redirects to HTTPS |
 | Nginx HTTPS | TCP 443 |
 | Cockpit | TCP 9090 |
 | Portainer internal | `127.0.0.1:9443` |
 | Vaultwarden internal | `127.0.0.1:8080` |
-| Proxmox | Proxmox host, normally TCP 8006 |
+| Joplin internal | `127.0.0.1:22300` |
 
 Portainer and Vaultwarden are intentionally bound to localhost on the Fedora host. Clients should reach them through Nginx.
 
@@ -288,6 +294,14 @@ sudo docker compose pull
 sudo docker compose up -d
 ```
 
+and:
+
+```bash
+cd /opt/fedora-server-setup/docker/joplin
+sudo docker compose pull
+sudo docker compose up -d
+```
+
 Always read the application's release notes before major upgrades, especially for Vaultwarden.
 
 ## Backups
@@ -297,6 +311,11 @@ At minimum, back up:
 ```text
 /etc/fedora-server-setup/tls/
 /opt/fedora-server-setup/docker/vaultwarden/data/
+```
+
+```text
+/opt/fedora-server-setup/docker/joplin/postgres-data/
+/etc/fedora-server-setup/joplin.env
 ```
 
 The Vaultwarden data directory contains the actual application database and attachments.

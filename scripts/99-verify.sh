@@ -37,6 +37,8 @@ check "Cockpit socket" systemctl is-active --quiet cockpit.socket
 check "Portainer container" docker inspect -f '{{.State.Running}}' portainer
 check "Vaultwarden container" docker inspect -f '{{.State.Running}}' vaultwarden
 check "Nginx configuration" nginx -t
+check "Joplin container" docker inspect -f '{{.State.Running}}' joplin
+check "Joplin PostgreSQL container" docker inspect -f '{{.State.Running}}' joplin-postgres
 
 if curl -kfsS --resolve "${PORTAINER_DOMAIN}:443:${STATIC_IP}" \
     "https://${PORTAINER_DOMAIN}/" >/dev/null 2>&1; then
@@ -54,25 +56,36 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 
+if curl -kfsS --resolve "${JOPLIN_DOMAIN}:443:${STATIC_IP}" \
+    "https://${JOPLIN_DOMAIN}/" >/dev/null 2>&1; then
+    printf '[ OK ] Joplin HTTPS\n'
+else
+    printf '[FAIL] Joplin HTTPS check failed\n'
+    FAILURES=$((FAILURES + 1))
+fi
+
 echo
 echo "========================================"
 echo " Addresses"
 echo "========================================"
+echo "Proxmox        : https://${PROXMOX_IP}:8006"
 echo "Fedora/Cockpit : https://${FEDORA_DOMAIN}:9090"
 echo "Portainer      : https://${PORTAINER_DOMAIN}"
 echo "Vaultwarden    : https://${VAULTWARDEN_DOMAIN}"
-echo "Proxmox        : https://${PROXMOX_IP}:8006"
+echo "Joplin         : https://${JOPLIN_DOMAIN}"
 echo
 echo "By IP before DNS is ready:"
 echo "Cockpit        : https://${STATIC_IP}:9090"
 echo "Portainer      : https://${STATIC_IP}"
 echo "Vaultwarden    : https://${STATIC_IP}"
+echo "Joplin         : https://${STATIC_IP}"
 echo
 echo "AdGuard records:"
 echo "  ${FEDORA_DOMAIN} -> ${STATIC_IP}"
 echo "  ${PORTAINER_DOMAIN} -> ${STATIC_IP}"
 echo "  ${VAULTWARDEN_DOMAIN} -> ${STATIC_IP}"
 echo "  ${PROXMOX_DOMAIN} -> ${PROXMOX_IP}"
+echo "  ${JOPLIN_DOMAIN} -> ${STATIC_IP}"
 echo
 echo "Local CA:"
 echo "  ${TLS_DIR}/ca.crt"
