@@ -1,4 +1,4 @@
-# Generated runtime state
+# Generated runtime state / secrets
 secrets/
 *.key
 *.crt
@@ -11,8 +11,8 @@ secrets/
 .env.*
 !.env.example
 
-# Vaultwarden runtime data
-docker/vaultwarden/data/
+# Application runtime data if a developer runs the project locally
+data/
 
 # Logs / editor files
 *.log

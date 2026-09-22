@@ -23,6 +23,7 @@ done
 
 default_choice=1
 if [[ -f "$NETWORK_STATE" ]]; then
+    # shellcheck disable=SC1090
     source "$NETWORK_STATE"
     for i in "${!active_connections[@]}"; do
         if [[ "${active_connections[$i]%%|*}" == "${CONNECTION_NAME:-}" ]]; then
@@ -34,8 +35,7 @@ fi
 
 read -r -p "Connection number [${default_choice}]: " choice
 choice="${choice:-$default_choice}"
-[[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#active_connections[@]})) ||
-    die "Invalid connection selection."
+[[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#active_connections[@]})) || die "Invalid connection selection."
 
 selected="${active_connections[$((choice-1))]}"
 CONNECTION_NAME="${selected%%|*}"
@@ -54,38 +54,26 @@ echo "  IPv4       : ${current_ip:-not set}/${current_prefix:-?}"
 echo "  Gateway    : ${current_gateway:-not set}"
 echo "  DNS        : ${current_dns:-not set}"
 
-if [[ -f "$NETWORK_STATE" ]] && [[ -n "$current_ip" && -n "$current_prefix" && -n "$current_gateway" && -n "$current_dns" ]]; then
-    saved_connection=""
-    saved_interface=""
-    saved_ip=""
-    saved_prefix=""
-    saved_gateway=""
-    saved_dns=""
+if [[ -f "$NETWORK_STATE" && -n "$current_ip" && -n "$current_prefix" && -n "$current_gateway" && -n "$current_dns" ]]; then
+    # shellcheck disable=SC1090
     source "$NETWORK_STATE"
-    saved_connection="$CONNECTION_NAME"
-    saved_interface="$INTERFACE"
-    saved_ip="$STATIC_IP"
-    saved_prefix="$PREFIX"
-    saved_gateway="$GATEWAY"
-    saved_dns="$DNS_SERVER"
-
-    CONNECTION_NAME="${selected%%|*}"
-    INTERFACE="${selected#*|}"
-
-    if [[ "$saved_connection" == "$CONNECTION_NAME" &&
-          "$saved_interface" == "$INTERFACE" &&
-          "$saved_ip" == "$current_ip" &&
-          "$saved_prefix" == "$current_prefix" &&
-          "$saved_gateway" == "$current_gateway" &&
-          "$saved_dns" == "$current_dns" ]]; then
+    if [[ "${CONNECTION_NAME:-}" == "${selected%%|*}" &&
+          "${INTERFACE:-}" == "${selected#*|}" &&
+          "${STATIC_IP:-}" == "$current_ip" &&
+          "${PREFIX:-}" == "$current_prefix" &&
+          "${GATEWAY:-}" == "$current_gateway" &&
+          "${DNS_SERVER:-}" == "$current_dns" ]]; then
         log "Current network configuration already matches saved state; no network change required."
         exit 0
     fi
+    CONNECTION_NAME="${selected%%|*}"
+    INTERFACE="${selected#*|}"
 fi
 
 echo
-warn "The next operation is expected to interrupt the current network/session connection."
+warn "The next operation may interrupt the current network/session connection."
 warn "If you are connected remotely through SSH or Cockpit, that session may disconnect."
+warn "After reconnecting, run: sudo ${STACK_DIR}/install.sh"
 read -r -p "Continue with this operation? [y/N]: " confirm
 [[ "$confirm" =~ ^[Yy]$ ]] || die "Network operation cancelled."
 
@@ -113,26 +101,47 @@ printf '  Connection : %s\n  Interface  : %s\n  IPv4       : %s/%s\n  Gateway   
 read -r -p "Apply this configuration? [y/N]: " confirm
 [[ "$confirm" =~ ^[Yy]$ ]] || die "Network configuration cancelled."
 
-nmcli connection modify "$CONNECTION_NAME" \
-    ipv4.method manual \
-    ipv4.addresses "${STATIC_IP}/${PREFIX}" \
-    ipv4.gateway "$GATEWAY" \
-    ipv4.dns "$DNS_SERVER"
-
-nmcli connection up "$CONNECTION_NAME"
-sleep 2
-
-ip -4 addr show dev "$INTERFACE" | grep -q "inet ${STATIC_IP}/" ||
-    die "Network connection came up, but ${STATIC_IP}/${PREFIX} was not detected."
-
-cat > "$NETWORK_STATE" <<EOF
+cat > "$NETWORK_STATE" <<EOF_STATE
 CONNECTION_NAME=$(printf '%q' "$CONNECTION_NAME")
 INTERFACE=$(printf '%q' "$INTERFACE")
 STATIC_IP=$(printf '%q' "$STATIC_IP")
 PREFIX=$(printf '%q' "$PREFIX")
 GATEWAY=$(printf '%q' "$GATEWAY")
 DNS_SERVER=$(printf '%q' "$DNS_SERVER")
-EOF
+EOF_STATE
 chmod 600 "$NETWORK_STATE"
 
-log "Static network configuration applied."
+nmcli connection modify "$CONNECTION_NAME" \
+    ipv4.method manual \
+    ipv4.addresses "${STATIC_IP}/${PREFIX}" \
+    ipv4.gateway "$GATEWAY" \
+    ipv4.dns "$DNS_SERVER"
+
+warn "Applying the network profile now. Your current session may disconnect."
+nmcli connection up "$CONNECTION_NAME" || {
+    warn "NetworkManager did not immediately report success."
+    warn "Wait approximately 10 seconds, reconnect, then run sudo ${STACK_DIR}/install.sh"
+    exit 0
+}
+
+sleep 2
+
+if ip -4 addr show dev "$INTERFACE" | grep -q "inet ${STATIC_IP}/"; then
+    log "Static network configuration applied successfully."
+else
+    warn "The connection came up, but ${STATIC_IP}/${PREFIX} was not detected yet."
+fi
+
+echo
+echo "========================================"
+echo " Network change completed"
+echo "========================================"
+echo "Your current SSH/Cockpit session may disconnect."
+echo "Wait about 10 seconds, reconnect to the new IP, then run:"
+echo
+echo "  sudo ${STACK_DIR}/install.sh"
+echo
+echo "The installer will detect the completed network stage and continue."
+echo
+sleep 10
+exit 20

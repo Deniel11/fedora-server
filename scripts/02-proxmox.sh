@@ -5,10 +5,12 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/00-common.sh"
 require_root
 require_fedora
 load_config
+validate_config
 ensure_dirs
 
 previous=""
 if [[ -f "$PROXMOX_STATE" ]]; then
+    # shellcheck disable=SC1090
     source "$PROXMOX_STATE"
     previous="${PROXMOX_IP:-}"
 fi
@@ -39,9 +41,9 @@ if [[ -n "$previous" && "$PROXMOX_IP" == "$previous" ]]; then
     exit 0
 fi
 
-cat > "$PROXMOX_STATE" <<EOF
+cat > "$PROXMOX_STATE" <<EOF_STATE
 PROXMOX_IP=$(printf '%q' "$PROXMOX_IP")
-EOF
+EOF_STATE
 chmod 600 "$PROXMOX_STATE"
 
 log "Saved Proxmox IP: ${PROXMOX_IP}"

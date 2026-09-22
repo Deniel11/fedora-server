@@ -5,6 +5,10 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/00-common.sh"
 require_root
 require_fedora
 
+if ! command -v dnf >/dev/null 2>&1; then
+    die "dnf is not available."
+fi
+
 dnf install -y dnf-plugins-core
 
 DOCKER_REPO="/etc/yum.repos.d/docker-ce.repo"

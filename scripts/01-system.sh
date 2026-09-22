@@ -5,12 +5,13 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/00-common.sh"
 require_root
 require_fedora
 load_config
+validate_config
 ensure_dirs
 
-log "Installing base packages"
+log "Installing base system packages"
 dnf install -y \
     ca-certificates curl firewalld openssl tar unzip \
-    policycoreutils-python-utils nginx cockpit
+    policycoreutils-python-utils nginx
 
 systemctl enable --now firewalld
 

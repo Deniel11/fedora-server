@@ -1,109 +1,209 @@
 # Extending the setup
 
-The repository is intentionally modular.
+Applications are intentionally self-contained. The central installer discovers application modules automatically.
 
-## Add another service
+## Add a Docker application
 
-Recommended pattern:
-
-1. Add a new Compose directory under `docker/`.
-2. Bind the application only to `127.0.0.1`.
-3. Add a dedicated Nginx virtual host under `nginx/`.
-4. Add the hostname to `config/domains.conf`.
-5. Extend `scripts/40-certificates.sh` with the new SAN/certificate.
-6. Extend `install.sh` in dependency order.
-7. Extend `scripts/99-verify.sh`.
-
-Example layout:
+Create:
 
 ```text
-docker/myservice/compose.yml
-nginx/myservice.conf
+apps/myservice/
+├── app.conf
+├── compose.yml
+├── install.sh
+├── verify.sh
+└── nginx.conf
 ```
 
-## Keep private data out of Git
-
-Never commit:
-
-- CA private keys
-- TLS private keys
-- Vaultwarden data
-- `.env` files containing secrets
-- database files
-- access tokens
-
-Use `.gitignore` and store generated runtime state under `/etc/fedora-server-setup/` or `/opt/fedora-server-setup/`.
-
-## Changing hostnames
-
-Edit:
+Add the application's visible domain and host port to:
 
 ```text
 config/domains.conf
 ```
 
-Then rerun:
+For example:
+
+```bash
+MYSERVICE_DOMAIN="myservice.home"
+MYSERVICE_PORT="8090"
+```
+
+Then define the module metadata in `app.conf`:
+
+```bash
+APP_ID="myservice"
+APP_NAME="My Service"
+APP_DOMAIN="${MYSERVICE_DOMAIN}"
+APP_PORT="${MYSERVICE_PORT}"
+APP_CONTAINER="myservice"
+APP_TLS_NAME="myservice"
+APP_NGINX_ENABLED="true"
+APP_CERTIFICATE_ENABLED="true"
+APP_HEALTHCHECK_URL="http://127.0.0.1:${APP_PORT}/"
+```
+
+The application will automatically appear in:
 
 ```bash
 sudo ./install.sh
 ```
 
-The certificate and Nginx stages are designed to be rerunnable.
-
-## Changing the Fedora IP
-
-Run:
+and:
 
 ```bash
-sudo ./install.sh
+sudo ./install.sh --list
 ```
 
-The network stage asks for the desired static IP. The certificate stage compares the current IP with the certificate SAN and regenerates certificates when needed.
+No change to `install.sh`, `40-certificates.sh` or `05-nginx.sh` is required.
 
-After an IP change, update the corresponding AdGuard records.
+## Application contract
 
-## Changing container images
-
-The Compose files deliberately use explicit image variables with defaults. You can create a local `.env` file beside a Compose file to pin a tested image tag.
-
-Example:
+Every application should implement:
 
 ```text
-PORTAINER_IMAGE=portainer/portainer-ce:lts
-VAULTWARDEN_IMAGE=vaultwarden/server:latest
+is_installed
+install
+is_running
+verify
 ```
 
-Do not commit a local `.env` file unless it contains no secrets.
+The common implementation is provided by `scripts/00-common.sh`.
 
-## Adding external DNS
+The application module provides the application-specific installation and verification details.
 
-This repository does not configure AdGuard or OPNsense.
+### Idempotency
 
-That keeps the Fedora setup independent of the network appliance.
+An already healthy application should not be recreated on every installer run.
 
-The expected DNS records are:
+Use:
+
+```bash
+if app_is_installed myservice && app_is_running myservice; then
+    log "My Service is already installed and running; skipping container recreation."
+else
+    app_compose_up myservice
+fi
+```
+
+Mark a successfully configured application with:
+
+```bash
+touch "$(app_runtime_dir myservice)/.installed"
+```
+
+## Compose requirements
+
+Applications must run through Docker Compose.
+
+Bind host ports to localhost whenever possible:
+
+```yaml
+ports:
+  - "127.0.0.1:${MYSERVICE_PORT}:8080"
+```
+
+Do not publish application ports directly to the LAN unless there is a deliberate reason to do so.
+
+The central configuration is responsible for the host port.
+
+## Nginx
+
+Use placeholders in `nginx.conf`:
 
 ```text
-fedora-server.home -> Fedora IP
-portainer.home     -> Fedora IP
-vault.home         -> Fedora IP
-proxmox.home       -> Proxmox IP
+__APP_DOMAIN__
+__APP_PORT__
+__APP_TLS_NAME__
 ```
 
-## HTTPS trust model
-
-This project uses one local CA and issues leaf certificates for:
-
-- `fedora-server.home`
-- `portainer.home`
-- `vault.home`
-
-The same certificates also contain the Fedora IP as an IP SAN.
-
-Clients must trust the CA certificate:
+The central Nginx stage replaces them and writes the result to:
 
 ```text
-/etc/fedora-server-setup/tls/ca.crt
+/etc/nginx/conf.d/myservice.conf
 ```
 
-Proxmox is intentionally excluded from this CA. Proxmox manages its own HTTPS certificate.
+If an application does not need Nginx, set:
+
+```bash
+APP_NGINX_ENABLED="false"
+```
+
+## Certificates
+
+If an application is served over HTTPS through Nginx, use:
+
+```bash
+APP_CERTIFICATE_ENABLED="true"
+```
+
+The central certificate stage automatically creates or refreshes the certificate for `APP_DOMAIN` and the current Fedora IP.
+
+For applications that do not need a certificate, set:
+
+```bash
+APP_CERTIFICATE_ENABLED="false"
+```
+
+## Storage
+
+Keep runtime data outside the Git repository.
+
+Use:
+
+```text
+/opt/fedora-server-apps/<app>/
+```
+
+for application data and Compose runtime files.
+
+Do not put passwords, databases, uploaded files or private keys into Git.
+
+For storage-heavy applications such as Immich, Jellyfin or file management, prefer a dedicated storage path when the hardware is ready.
+
+## Domain and port collision checks
+
+The central configuration validator automatically checks for duplicate domains and host ports.
+
+Do not work around a collision by hardcoding a second port inside `compose.yml`. Change the central configuration instead.
+
+## Secrets
+
+If an application needs a secret:
+
+- generate it on the server
+- store it under `/etc/fedora-server-setup` or `/opt/fedora-server-apps`
+- use restrictive permissions
+- never commit it to Git
+
+Joplin is the reference example: its PostgreSQL password is generated or entered interactively and stored in the runtime `.env` file with mode `600`.
+
+## Existing data migration
+
+If an application already exists in an older repository layout, migrate its data before starting the new Compose project.
+
+Do not delete the old data automatically unless the migration has been verified.
+
+## Testing a new application
+
+At minimum:
+
+```bash
+bash -n install.sh
+bash -n scripts/*.sh
+bash -n apps/myservice/*.sh
+```
+
+Then use ShellCheck:
+
+```bash
+shellcheck install.sh scripts/*.sh apps/*/*.sh
+```
+
+Finally test:
+
+```bash
+sudo ./install.sh --app myservice
+sudo ./install.sh --app myservice
+```
+
+The second run should be a no-op for a healthy application.

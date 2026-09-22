@@ -5,18 +5,39 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/00-common.sh"
 require_root
 require_fedora
 load_config
+validate_config
 ensure_dirs
 
-[[ -f "$NETWORK_STATE" ]] || die "Network state missing. Run 02-network.sh first."
+[[ -f "$NETWORK_STATE" ]] || die "Network state missing. Run the network stage first."
+# shellcheck disable=SC1090
 source "$NETWORK_STATE"
-
 valid_ipv4 "$STATIC_IP" || die "Invalid stored Fedora IP: $STATIC_IP"
-for domain in "$PROXMOX_DOMAIN" "$FEDORA_DOMAIN" "$PORTAINER_DOMAIN" "$VAULTWARDEN_DOMAIN" "$JOPLIN_DOMAIN"; do
-    valid_hostname "$domain" || die "Invalid hostname in config: $domain"
-done
 
 CA_KEY="${TLS_DIR}/ca.key"
 CA_CERT="${TLS_DIR}/ca.crt"
+
+selection_file="${STATE_DIR}/selected-apps.env"
+selected_apps=""
+if [[ -f "$selection_file" ]]; then
+    # shellcheck disable=SC1090
+    source "$selection_file"
+    selected_apps="${SELECTED_APPS:-}"
+fi
+
+app_list() {
+    local app_id
+    declare -A seen=()
+    for app_id in ${selected_apps}; do
+        seen["$app_id"]=1
+        printf '%s\n' "$app_id"
+    done
+    while IFS= read -r app_id; do
+        [[ -n "$app_id" ]] || continue
+        [[ -n "${seen[$app_id]:-}" ]] && continue
+        app_is_installed "$app_id" || continue
+        printf '%s\n' "$app_id"
+    done < <(app_ids)
+}
 
 generate_ca() {
     log "Generating local Certificate Authority"
@@ -36,12 +57,12 @@ generate_leaf() {
     local csr="${TLS_DIR}/${name}.csr"
     local ext="${TLS_DIR}/${name}.ext"
 
-    cat > "$ext" <<EOF
+    cat > "$ext" <<EOF_EXT
 basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
 subjectAltName=DNS:${domain},IP:${ip}
-EOF
+EOF_EXT
 
     openssl genrsa -out "$key" 2048
     openssl req -new -key "$key" -out "$csr" \
@@ -63,14 +84,11 @@ needs_regeneration() {
     return 1
 }
 
-for spec in \
-    "fedora-server:${FEDORA_DOMAIN}" \
-    "portainer:${PORTAINER_DOMAIN}" \
-    "vaultwarden:${VAULTWARDEN_DOMAIN}"\
-    "joplin:${JOPLIN_DOMAIN}"
-do
-    name="${spec%%:*}"
-    domain="${spec#*:}"
+for app_id in $(app_list); do
+    load_app_config "$app_id" || continue
+    [[ "${APP_CERTIFICATE_ENABLED:-true}" == "true" ]] || continue
+    domain="$APP_DOMAIN"
+    name="$APP_TLS_NAME"
     cert="${TLS_DIR}/${name}.crt"
     key="${TLS_DIR}/${name}.key"
 
@@ -82,6 +100,14 @@ do
         log "Certificate for ${domain} is current; skipping regeneration."
     fi
 done
+
+# Cockpit is part of Fedora infrastructure, not a Docker application.
+# It uses its own generated certificate and remains available independently.
+if [[ -s "${TLS_DIR}/fedora-server.crt" && -s "${TLS_DIR}/fedora-server.key" ]]; then
+    log "Cockpit certificate is already available."
+elif needs_regeneration "${TLS_DIR}/fedora-server.crt" "$FEDORA_DOMAIN" "$STATIC_IP"; then
+    generate_leaf "fedora-server" "$FEDORA_DOMAIN" "$STATIC_IP"
+fi
 
 chmod 700 "$TLS_DIR"
 chmod 600 "$CA_KEY" "${TLS_DIR}"/*.key
