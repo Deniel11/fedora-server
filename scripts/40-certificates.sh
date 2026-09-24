@@ -13,6 +13,11 @@ ensure_dirs
 source "$NETWORK_STATE"
 valid_ipv4 "$STATIC_IP" || die "Invalid stored Fedora IP: $STATIC_IP"
 
+[[ -f "$PROXMOX_STATE" ]] || die "Proxmox state missing. Run the Proxmox stage first."
+# shellcheck disable=SC1090
+source "$PROXMOX_STATE"
+valid_ipv4 "$PROXMOX_IP" || die "Invalid stored Proxmox IP: $PROXMOX_IP"
+
 CA_KEY="${TLS_DIR}/ca.key"
 CA_CERT="${TLS_DIR}/ca.crt"
 
@@ -29,13 +34,15 @@ app_list() {
     declare -A seen=()
     for app_id in ${selected_apps}; do
         seen["$app_id"]=1
-        printf '%s\n' "$app_id"
+        printf '%s
+' "$app_id"
     done
     while IFS= read -r app_id; do
         [[ -n "$app_id" ]] || continue
         [[ -n "${seen[$app_id]:-}" ]] && continue
         app_is_installed "$app_id" || continue
-        printf '%s\n' "$app_id"
+        printf '%s
+' "$app_id"
     done < <(app_ids)
 }
 
@@ -100,6 +107,16 @@ for app_id in $(app_list); do
         log "Certificate for ${domain} is current; skipping regeneration."
     fi
 done
+
+# Proxmox is external infrastructure, but its HTTPS endpoint is published
+# through the Fedora Nginx reverse proxy.
+if needs_regeneration "${TLS_DIR}/proxmox.crt" "$PROXMOX_DOMAIN" "$PROXMOX_IP"; then
+    log "Generating/updating certificate for ${PROXMOX_DOMAIN}"
+    rm -f "${TLS_DIR}/proxmox.key" "${TLS_DIR}/proxmox.crt"
+    generate_leaf "proxmox" "$PROXMOX_DOMAIN" "$PROXMOX_IP"
+else
+    log "Certificate for ${PROXMOX_DOMAIN} is current; skipping regeneration."
+fi
 
 # Cockpit is part of Fedora infrastructure, not a Docker application.
 # It uses its own generated certificate and remains available independently.

@@ -10,7 +10,7 @@ ensure_dirs
 
 log "Installing base system packages"
 dnf install -y \
-    ca-certificates curl firewalld openssl tar unzip \
+    ca-certificates cockpit curl firewalld openssl tar unzip \
     policycoreutils-python-utils nginx
 
 systemctl enable --now firewalld

@@ -1,541 +1,633 @@
-# Fedora Server Home Services Setup
+# Fedora Server Setup
 
-Automated, rerunnable setup for a Fedora Server VM on Proxmox.
+Automated setup and configuration for a Fedora Server home lab.
 
-The project intentionally keeps the runtime simple:
+The repository configures a Fedora Server with:
 
-- Fedora Server for the host
-- NetworkManager for the static IP
-- Docker Engine + Docker Compose for applications
-- Nginx as the HTTPS reverse proxy
-- a small local Certificate Authority for internal `.home` names
-- Cockpit remains a Fedora Server infrastructure component and is **not** managed as a Docker application
-- every application lives in its own `apps/<name>/` module
-
-The installer is designed to be safe to rerun. Existing healthy applications are not recreated just because the installer was started again.
+* Static network configuration
+* Local Certificate Authority
+* HTTPS certificates for internal services
+* Nginx reverse proxy
+* Cockpit over HTTPS
+* Proxmox reverse proxy over HTTPS
+* Docker and Docker Compose
+* Optional application services
+* Firewall and SELinux configuration
+* Verification of the resulting setup
 
 ## Architecture
 
-```text
-                         Fedora Server
-                              |
-              +---------------+---------------+
-              |                               |
-       Infrastructure                  Docker applications
-              |                               |
-       +------+------+              +---------+---------+
-       |      |      |              |         |         |
-   Network  Docker  Nginx       Portainer Vaultwarden Joplin
-       |             |              |         |         |
-       +------+------+--------------+---------+---------+
-                              |
-                         HTTPS / .home
-                              |
-                           OPNsense
-                              |
-                         WireGuard / DNS
-```
-
-The Fedora installer does not configure OPNsense, WireGuard or DNS. Those remain network-appliance responsibilities.
-
-## What the installer configures
-
-Mandatory infrastructure:
-
-1. Fedora base packages and firewall preparation
-2. Proxmox IP record
-3. Fedora static IPv4 configuration through NetworkManager
-4. Docker Engine + Docker Compose
-5. local CA and application certificates
-6. Nginx reverse proxy
-
-Applications are optional and selected after the infrastructure options are displayed.
-
-Current applications:
-
-- Portainer CE
-- Vaultwarden
-- Joplin Server + PostgreSQL
-
-Future applications can be added without modifying the main application-selection logic. Examples planned for the future include Jellyfin, Immich and a file-management application when additional storage is available.
-
-## Central configuration
-
-All visible domain and host-port assignments are kept in:
+The Fedora Server acts as the central HTTPS reverse proxy for both local services and external infrastructure.
 
 ```text
-config/domains.conf
+                         Home LAN
+                            │
+                            │
+                    ┌───────▼────────┐
+                    │  Fedora Server │
+                    │                │
+                    │ Nginx :80/443 │
+                    └───────┬────────┘
+                            │
+             ┌──────────────┼──────────────┐
+             │              │              │
+             │              │              │
+      ┌──────▼──────┐ ┌─────▼─────┐ ┌─────▼────────┐
+      │   Cockpit   │ │  Docker   │ │   Proxmox    │
+      │ 127.0.0.1   │ │ containers │ │ <PROXMOX_IP> │
+      │    :9090    │ │            │ │    :8006     │
+      └─────────────┘ └────────────┘ └──────────────┘
 ```
 
-Example:
+### HTTPS endpoints
 
-```bash
-PORTAINER_DOMAIN="portainer.home"
-PORTAINER_PORT="9443"
+| Hostname                     | Backend                     | Purpose              |
+| ---------------------------- | --------------------------- | -------------------- |
+| `https://fedora-server.home` | `https://127.0.0.1:9090`    | Fedora Cockpit       |
+| `https://proxmox.home`       | `https://<PROXMOX_IP>:8006` | Proxmox Web UI       |
+| Application hostnames        | Docker application ports    | Application services |
 
-VAULTWARDEN_DOMAIN="vault.home"
-VAULTWARDEN_PORT="8080"
-VAULTWARDEN_NOTIFICATIONS_HUB_PORT="3012"
+The Fedora Server terminates HTTPS using certificates issued by the repository's local Certificate Authority.
 
-JOPLIN_DOMAIN="joplin.home"
-JOPLIN_PORT="22300"
-```
+For Proxmox, the backend connection remains HTTPS on port `8006`. Nginx does not validate the Proxmox backend certificate because the public-facing certificate is managed by the Fedora Server's local CA.
 
-The installer validates these values before changing the system.
-
-It checks for:
-
-- invalid hostnames
-- invalid TCP ports
-- duplicate domains
-- duplicate host ports
-
-If a conflict is found, installation stops before the affected services are deployed.
-
-Container-internal ports are not part of this collision check. The check is for ports exposed on the Fedora host.
-
-## First installation
-
-Git is not required on the Fedora server.
-
-### Bootstrap
-
-From a fresh Fedora Server installation:
-
-```bash
-curl -fL https://raw.githubusercontent.com/Deniel11/fedora-server/main/bootstrap.sh \
-  -o /tmp/bootstrap.sh
-
-chmod +x /tmp/bootstrap.sh
-
-sudo /tmp/bootstrap.sh
-```
-
-Bootstrap downloads the `main` branch, extracts it and installs the repository under:
+## Repository Structure
 
 ```text
-/opt/fedora-server-setup
+.
+├── config/
+│   ├── apps/
+│   ├── cockpit.conf
+│   ├── domains.conf
+│   ├── fedora-server.nginx.conf
+│   └── proxmox.nginx.conf
+├── scripts/
+│   ├── 00-common.sh
+│   ├── 01-system.sh
+│   ├── 02-proxmox.sh
+│   ├── 03-network.sh
+│   ├── 04-docker.sh
+│   ├── 05-nginx.sh
+│   ├── 40-certificates.sh
+│   ├── ...
+│   └── 99-verify.sh
+├── install.sh
+└── README.md
 ```
 
-Then start the installer:
+## Requirements
+
+* Fedora Server
+* Root privileges
+* A working network connection
+* A DNS resolver or local DNS configuration capable of resolving the configured `.home` hostnames
+* A Proxmox host reachable from the Fedora Server
+* Git, if the repository is being cloned or updated manually
+
+The setup scripts are intended to be run as `root` or through `sudo`.
+
+## Installation
+
+Clone the repository:
 
 ```bash
-sudo /opt/fedora-server-setup/install.sh
+git clone https://github.com/Deniel11/fedora-server.git
+cd fedora-server
 ```
 
-## Interactive installer
-
-The default command is:
+Run the installer:
 
 ```bash
 sudo ./install.sh
 ```
 
-The installer first displays the available applications and their domains/ports.
-
-It then asks:
+The installer runs the setup stages in order:
 
 ```text
-Do you want to install ALL listed applications? [y/N]:
+01-system.sh
+02-proxmox.sh
+03-network.sh
+04-docker.sh
+40-certificates.sh
+05-nginx.sh
+...
+99-verify.sh
 ```
 
-If the answer is `yes`, every application is selected.
+## Proxmox Configuration
 
-If the answer is `no`, the installer asks about each application individually.
+The Proxmox IP address is requested interactively by `02-proxmox.sh`.
 
-After all answers are collected, it prints the final installation plan, waits four seconds, and starts the installation.
+Example:
 
-The infrastructure is always installed/configured first. Selected applications are installed afterwards.
+```text
+Enter Proxmox IP [192.168.1.10]:
+```
 
-## Quick commands
+The selected address is stored locally in:
 
-List applications:
+```text
+/etc/fedora-server-setup/proxmox.env
+```
+
+Example:
 
 ```bash
-sudo ./install.sh --list
+PROXMOX_IP=192.168.1.10
 ```
 
-Install every application:
+The IP is therefore defined in one place rather than being duplicated in the Nginx or certificate configuration.
+
+The stored value is subsequently used by:
+
+* the Proxmox TLS certificate generation
+* the Proxmox Nginx reverse proxy configuration
+* the verification stage
+
+The Proxmox host continues to provide its own HTTPS service on port `8006`.
+
+## Domain Configuration
+
+Infrastructure domains and ports are defined in:
+
+```text
+config/domains.conf
+```
+
+Current infrastructure configuration:
 
 ```bash
-sudo ./install.sh --all
+PROXMOX_DOMAIN="proxmox.home"
+FEDORA_DOMAIN="fedora-server.home"
+
+PROXMOX_PORT="8006"
+FEDORA_PORT="9090"
 ```
 
-Install only one application:
+Application domains and ports are configured in the same file and application-specific configuration files.
 
-```bash
-sudo ./install.sh --app portainer
-sudo ./install.sh --app vaultwarden
-sudo ./install.sh --app joplin
-```
+Do not place the Proxmox IP address in `domains.conf`.
 
-Show help:
-
-```bash
-sudo ./install.sh --help
-```
-
-The normal interactive installer remains the recommended first-install path because Proxmox and network settings may require operator input.
-
-## Application module structure
-
-Every Docker application follows the same layout:
+The IP is intentionally collected by `02-proxmox.sh` and stored in:
 
 ```text
-apps/<application>/
-├── app.conf
-├── compose.yml
-├── install.sh
-├── verify.sh
-└── nginx.conf
+/etc/fedora-server-setup/proxmox.env
 ```
-
-### `app.conf`
-
-Describes the application to the central installer:
-
-```bash
-APP_ID="joplin"
-APP_NAME="Joplin Server"
-APP_DOMAIN="${JOPLIN_DOMAIN}"
-APP_PORT="${JOPLIN_PORT}"
-APP_CONTAINER="joplin"
-APP_TLS_NAME="joplin"
-APP_NGINX_ENABLED="true"
-APP_CERTIFICATE_ENABLED="true"
-APP_HEALTHCHECK_URL="http://127.0.0.1:${JOPLIN_PORT}/"
-```
-
-### `compose.yml`
-
-Contains the Docker Compose definition. Applications are started only through Docker Compose.
-
-### `install.sh`
-
-Implements the application installation lifecycle. It must be idempotent: if the application is already installed and healthy, rerunning the installer should not unnecessarily recreate it.
-
-### `verify.sh`
-
-Implements the application health check.
-
-### `nginx.conf`
-
-Defines the application reverse proxy. The central Nginx stage replaces these placeholders:
-
-```text
-__APP_DOMAIN__
-__APP_PORT__
-__APP_TLS_NAME__
-```
-
-## Application lifecycle
-
-The installer standardizes the following concepts:
-
-```text
-is_installed
-install
-is_running
-verify
-```
-
-The common helper functions live in:
-
-```text
-scripts/00-common.sh
-```
-
-Application-specific installation and health checks stay inside the application module.
-
-The main installer discovers application modules automatically. Adding a new application therefore does not require editing `install.sh`, the certificate script or the Nginx script.
-
-## Runtime data and secrets
-
-Repository files and runtime data are intentionally separated.
-
-Repository:
-
-```text
-/opt/fedora-server-setup
-```
-
-Application runtime data:
-
-```text
-/opt/fedora-server-apps
-```
-
-System state and secrets:
-
-```text
-/etc/fedora-server-setup
-```
-
-Do not commit:
-
-- CA private keys
-- TLS private keys
-- database passwords
-- `.env` files containing secrets
-- databases
-- application data
-- access tokens
-
-## Existing-install migration
-
-The refactored Portainer deployment continues to use the existing Docker named volume:
-
-```text
-portainer_data
-```
-
-Vaultwarden data from the previous repository layout is copied from:
-
-```text
-/opt/fedora-server-setup/docker/vaultwarden/data
-```
-
-to:
-
-```text
-/opt/fedora-server-apps/vaultwarden/data
-```
-
-The old data is not deleted automatically.
-
-Joplin PostgreSQL data is similarly migrated from:
-
-```text
-/opt/fedora-server-setup/docker/joplin/postgres-data
-```
-
-to:
-
-```text
-/opt/fedora-server-apps/joplin/postgres-data
-```
-
-The previous Joplin password file at:
-
-```text
-/etc/fedora-server-setup/joplin.env
-```
-
-is reused when available.
-
-## Network changes and reconnect workflow
-
-The Fedora static IP is configured through NetworkManager.
-
-If the selected network configuration differs from the current one, the installer warns that the current SSH/Cockpit session may disconnect.
-
-After applying the change, the installer waits approximately ten seconds and stops.
-
-It tells the operator to reconnect and run:
-
-```bash
-sudo /opt/fedora-server-setup/install.sh
-```
-
-The network stage is then detected as already completed and the installation continues.
-
-This is deliberate: the installer does not try to continue blindly across a network/session change.
-
-## System updates and reboot workflow
-
-At the beginning of a normal installation, the installer checks for pending Fedora updates.
-
-If updates are available, it offers to install them and then stops.
-
-If a reboot is required, the installer tells the operator to reboot and rerun:
-
-```bash
-sudo /opt/fedora-server-setup/install.sh
-```
-
-The installer does not automatically reboot the machine because the normal use case may be a remote SSH session.
 
 ## Cockpit
 
-Cockpit is treated as Fedora Server infrastructure, not as a Docker application.
+Cockpit is installed as part of the base system.
 
-The application discovery system does not include Cockpit.
+The installer enables the Cockpit package and configures its reverse-proxy settings in:
 
-The installer does not require a `apps/cockpit/` module and does not expose Cockpit in the application-selection menu.
+```text
+/etc/cockpit/cockpit.conf
+```
 
-Cockpit normally comes with Fedora Server. The final verification stage reports its socket state but does not treat an inactive Cockpit socket as a Docker application failure.
+The relevant configuration is:
 
-## TLS / certificates
+```ini
+[WebService]
+Origins = https://fedora-server.home
+ProtocolHeader = X-Forwarded-Proto
+```
 
-The project creates a local Certificate Authority because `.home` is an internal domain.
+Cockpit itself continues listening locally on:
 
-Generated TLS files are stored in:
+```text
+https://127.0.0.1:9090
+```
+
+It is not exposed directly as the public HTTPS endpoint.
+
+Nginx provides the public endpoint:
+
+```text
+https://fedora-server.home
+```
+
+The Fedora Server certificate is:
+
+```text
+/etc/fedora-server-setup/tls/fedora-server.crt
+```
+
+and its private key is:
+
+```text
+/etc/fedora-server-setup/tls/fedora-server.key
+```
+
+## Proxmox Reverse Proxy
+
+Nginx publishes the Proxmox Web UI at:
+
+```text
+https://proxmox.home
+```
+
+The backend is:
+
+```text
+https://<PROXMOX_IP>:8006
+```
+
+The runtime Nginx configuration is generated at:
+
+```text
+/etc/nginx/conf.d/proxmox.conf
+```
+
+The configuration uses:
+
+```nginx
+proxy_pass https://<PROXMOX_IP>:8006;
+proxy_ssl_verify off;
+```
+
+`proxy_ssl_verify off` is intentional because the Proxmox host normally uses its own certificate, which is independent from the Fedora Server local CA.
+
+The client-facing certificate is instead generated by the Fedora Server setup:
+
+```text
+/etc/fedora-server-setup/tls/proxmox.crt
+/etc/fedora-server-setup/tls/proxmox.key
+```
+
+The Proxmox certificate contains:
+
+```text
+DNS:proxmox.home
+IP Address:<PROXMOX_IP>
+```
+
+The Nginx configuration also forwards WebSocket-related headers required by the Proxmox Web UI.
+
+## Local Certificate Authority
+
+The setup creates a local Certificate Authority under:
 
 ```text
 /etc/fedora-server-setup/tls/
 ```
 
-The CA private key is root-readable only.
+The CA files are:
 
-Application certificates contain both:
+```text
+ca.key
+ca.crt
+```
 
-- the configured DNS name
-- the current Fedora static IP as an IP SAN
+The CA certificate is valid for the home lab and is used to sign certificates for internal HTTPS services.
 
-If the Fedora IP changes, rerunning the installer causes certificates to be regenerated when their SAN no longer matches.
+Generated certificates include:
 
-Trust the CA on client devices by importing:
+```text
+fedora-server.crt
+proxmox.crt
+```
+
+and certificates for enabled applications.
+
+The CA private key must remain protected.
+
+The setup uses:
+
+```text
+/etc/fedora-server-setup/tls/ca.key
+```
+
+with restrictive permissions.
+
+## Trusting the Local CA
+
+Client machines must trust:
 
 ```text
 /etc/fedora-server-setup/tls/ca.crt
 ```
 
-Without trusting the CA, browsers will correctly display a certificate trust warning.
+before browsers will consider the internal HTTPS certificates trusted.
 
-## Nginx
+The exact installation procedure depends on the client operating system.
 
-Nginx is the HTTPS entry point for Docker applications.
-
-Applications bind their Docker ports to `127.0.0.1` on the Fedora host. Clients therefore reach applications through Nginx rather than directly through Docker-published ports.
-
-Nginx configurations are generated automatically from the application modules.
-
-The main Nginx stage does not contain application-specific blocks for Portainer, Vaultwarden or Joplin.
-
-## OPNsense, DNS and WireGuard
-
-The Fedora repository deliberately does not configure OPNsense.
-
-The expected future setup is:
+After installing the CA certificate, clients should be able to access:
 
 ```text
-Internet
-   |
-OPNsense
-   |
-   +-- DNS
-   +-- Firewall
-   +-- WireGuard
-          |
-       Home LAN
-          |
-   Fedora Server
+https://fedora-server.home
+https://proxmox.home
 ```
 
-The DNS records should point the application domains to the Fedora static IP.
+without browser certificate warnings, provided the corresponding `.home` names resolve correctly.
 
-Example:
+## DNS
+
+The configured hostnames must resolve to the Fedora Server's IP address for the reverse-proxied services.
+
+For example:
 
 ```text
-fedora-server.home -> FEDORA_STATIC_IP
-portainer.home     -> FEDORA_STATIC_IP
-vault.home         -> FEDORA_STATIC_IP
-joplin.home        -> FEDORA_STATIC_IP
-proxmox.home       -> PROXMOX_IP
+fedora-server.home -> <FEDORA_SERVER_IP>
+proxmox.home       -> <FEDORA_SERVER_IP>
 ```
 
-## Updating the repository
+Notice that `proxmox.home` points to the **Fedora Server**, not directly to the Proxmox host.
 
-The repository can be updated without Git:
+The traffic flow is:
 
-```bash
-sudo /opt/fedora-server-setup/update-repo.sh
+```text
+Client
+  │
+  │ https://proxmox.home
+  ▼
+Fedora Server
+  │
+  │ Nginx HTTPS reverse proxy
+  ▼
+Proxmox <PROXMOX_IP>:8006
 ```
 
-The update script downloads the latest `main` branch from GitHub and replaces repository files.
+## Firewall
 
-Runtime application data is stored outside the repository under `/opt/fedora-server-apps`, so updating the repository does not replace application databases or uploads.
+The setup enables the following firewall services:
 
-After an update, rerun:
-
-```bash
-sudo /opt/fedora-server-setup/install.sh
+```text
+http
+https
+cockpit
 ```
 
-The installer is idempotent and applies new configuration only where required.
+The public HTTPS entry point is therefore:
 
-## Container updates
-
-The normal installer does **not** pull every latest image on every run.
-
-This is intentional.
-
-For a deliberate application update, use its Compose directory in the runtime tree:
-
-```bash
-cd /opt/fedora-server-apps/portainer
-sudo docker compose pull
-sudo docker compose up -d
+```text
+TCP/443
 ```
 
-For Vaultwarden:
+The Proxmox port `8006` does not need to be exposed to clients through the Fedora Server.
 
-```bash
-cd /opt/fedora-server-apps/vaultwarden
-sudo docker compose pull
-sudo docker compose up -d
+The Fedora Server only needs network access to the Proxmox host on TCP port `8006`.
+
+## SELinux
+
+Nginx operates as a reverse proxy and therefore needs permission to make outbound network connections.
+
+The setup enables:
+
+```text
+httpd_can_network_connect
 ```
 
-For Joplin:
+when the SELinux tooling is available.
 
-```bash
-cd /opt/fedora-server-apps/joplin
-sudo docker compose pull
-sudo docker compose up -d
+This is required for Nginx to proxy traffic to:
+
+```text
+127.0.0.1:9090
 ```
 
-Read the application's release notes before major upgrades, especially for database-backed applications.
+and:
 
-## Backups
+```text
+<PROXMOX_IP>:8006
+```
 
-At minimum, back up:
+## Nginx Configuration
+
+The repository contains separate configuration templates for the infrastructure endpoints.
+
+### Fedora / Cockpit
+
+```text
+config/fedora-server.nginx.conf
+```
+
+Installed as:
+
+```text
+/etc/nginx/conf.d/fedora-server.conf
+```
+
+### Proxmox
+
+```text
+config/proxmox.nginx.conf
+```
+
+Installed as:
+
+```text
+/etc/nginx/conf.d/proxmox.conf
+```
+
+Both configurations redirect HTTP to HTTPS.
+
+Nginx uses the local CA certificates generated by the certificate stage.
+
+## Application Reverse Proxies
+
+Docker applications continue to use the repository's existing application configuration mechanism.
+
+Application definitions are stored under:
+
+```text
+config/apps/
+```
+
+The common Nginx installation logic in:
+
+```text
+scripts/00-common.sh
+```
+
+generates the runtime application configurations from their templates.
+
+The infrastructure reverse proxies for Cockpit and Proxmox are configured separately because neither service is a Docker application.
+
+## Persistent State
+
+The setup stores runtime state under:
 
 ```text
 /etc/fedora-server-setup/
-/opt/fedora-server-apps/
 ```
 
-For the current applications this includes Portainer's Docker volume and the Vaultwarden/Joplin data directories.
+Important state files include:
 
-## Troubleshooting
+```text
+/etc/fedora-server-setup/network.env
+/etc/fedora-server-setup/proxmox.env
+/etc/fedora-server-setup/selected-apps.env
+```
 
-Check Docker:
+TLS material is stored under:
+
+```text
+/etc/fedora-server-setup/tls/
+```
+
+This separation keeps installation state and generated secrets outside the Git repository.
+
+## Updating the Installation
+
+The repository can be updated normally:
 
 ```bash
-sudo systemctl status docker
-sudo docker ps
+cd /path/to/fedora-server
+git pull
 ```
 
-Check Nginx:
+Configuration templates can then be reapplied by running the relevant setup stages.
+
+For example:
+
+```bash
+sudo ./scripts/40-certificates.sh
+sudo ./scripts/05-nginx.sh
+```
+
+The full installer can also be run again:
+
+```bash
+sudo ./install.sh
+```
+
+The Proxmox IP is reused from:
+
+```text
+/etc/fedora-server-setup/proxmox.env
+```
+
+so it does not need to be entered again unless the state file is removed or the configuration is intentionally changed.
+
+## Verification
+
+The final verification stage is:
+
+```bash
+sudo ./scripts/99-verify.sh
+```
+
+Useful manual checks include:
+
+### Nginx configuration
 
 ```bash
 sudo nginx -t
+```
+
+### Services
+
+```bash
 sudo systemctl status nginx
-sudo journalctl -u nginx -e
+sudo systemctl status cockpit.socket
 ```
 
-Check a specific application:
+### Cockpit configuration
 
 ```bash
-sudo docker compose -f /opt/fedora-server-apps/portainer/compose.yml ps
-sudo docker compose -f /opt/fedora-server-apps/vaultwarden/compose.yml ps
-sudo docker compose -f /opt/fedora-server-apps/joplin/compose.yml ps
+sudo cat /etc/cockpit/cockpit.conf
 ```
 
-Run the complete verification stage again:
+### Generated Nginx configuration
 
 ```bash
-sudo /opt/fedora-server-setup/scripts/99-verify.sh
+sudo cat /etc/nginx/conf.d/fedora-server.conf
+sudo cat /etc/nginx/conf.d/proxmox.conf
 ```
 
-## ShellCheck
-
-The scripts are intended to be ShellCheck-friendly:
+### Proxmox state
 
 ```bash
-shellcheck install.sh scripts/*.sh apps/*/*.sh
+sudo cat /etc/fedora-server-setup/proxmox.env
 ```
 
-## License
+### HTTPS endpoints
 
-MIT. See `LICENSE`.
+```bash
+curl -kI https://fedora-server.home
+curl -kI https://proxmox.home
+```
+
+### Fedora Server certificate
+
+```bash
+sudo openssl x509 \
+    -in /etc/fedora-server-setup/tls/fedora-server.crt \
+    -noout -subject -issuer -ext subjectAltName
+```
+
+### Proxmox certificate
+
+```bash
+sudo openssl x509 \
+    -in /etc/fedora-server-setup/tls/proxmox.crt \
+    -noout -subject -issuer -ext subjectAltName
+```
+
+The Proxmox certificate should contain:
+
+```text
+DNS:proxmox.home
+IP Address:<PROXMOX_IP>
+```
+
+## Git Workflow
+
+The repository is intentionally kept separate from generated runtime state.
+
+Do not commit:
+
+```text
+/etc/fedora-server-setup/
+```
+
+or generated private keys.
+
+Before committing repository changes:
+
+```bash
+git diff --check
+git diff
+```
+
+Shell scripts can be syntax-checked with:
+
+```bash
+bash -n scripts/01-system.sh
+bash -n scripts/05-nginx.sh
+bash -n scripts/40-certificates.sh
+```
+
+After verifying the changes:
+
+```bash
+git add README.md \
+    config/cockpit.conf \
+    config/fedora-server.nginx.conf \
+    config/proxmox.nginx.conf \
+    scripts/01-system.sh \
+    scripts/05-nginx.sh \
+    scripts/40-certificates.sh
+
+git commit -m "feat: proxy Cockpit and Proxmox through Nginx"
+git push
+```
+
+## Commit
+
+Recommended commit message:
+
+```text
+feat: proxy Cockpit and Proxmox through Nginx
+```
+
+This change introduces:
+
+* Cockpit installation and reverse-proxy configuration
+* Fedora Server HTTPS endpoint
+* Proxmox HTTPS reverse proxy
+* Proxmox-specific local CA certificate
+* Proxmox IP reuse from `proxmox.env`
+* Nginx WebSocket forwarding for Proxmox
+* SELinux configuration for reverse-proxy connections
+* Updated documentation
