@@ -22,14 +22,12 @@ require_root() {
 
 require_fedora() {
     [[ -r /etc/os-release ]] || die "/etc/os-release not found."
-    # shellcheck disable=SC1091
     source /etc/os-release
     [[ "${ID:-}" == "fedora" ]] || die "This repository supports Fedora Server only. Detected: ${ID:-unknown}"
 }
 
 load_config() {
     [[ -f "$CONFIG_FILE" ]] || die "Missing config: $CONFIG_FILE"
-    # shellcheck disable=SC1090
     source "$CONFIG_FILE"
 }
 
@@ -153,7 +151,6 @@ load_app_config() {
     local app_id="$1" conf
     conf="$(app_dir "$app_id")/app.conf"
     [[ -f "$conf" ]] || die "Missing application configuration: $conf"
-    # shellcheck disable=SC1090
     source "$conf"
     [[ "${APP_ID:-}" == "$app_id" ]] || die "Application config ${conf} has unexpected APP_ID=${APP_ID:-unset}"
     [[ "${APP_ENABLED:-true}" == "true" ]] || return 1
@@ -229,7 +226,11 @@ app_compose_up() {
     local app_id="$1" runtime compose
     runtime="$(app_runtime_dir "$app_id")"
     compose="$(app_compose_file "$app_id")"
-    ( cd "$runtime" && docker compose -f "$compose" up -d )
+    if [[ "${RECONFIGURE:-false}" == "true" ]]; then
+        ( cd "$runtime" && docker compose -f "$compose" up -d --force-recreate )
+    else
+        ( cd "$runtime" && docker compose -f "$compose" up -d )
+    fi
 }
 
 app_compose_pull() {

@@ -11,20 +11,25 @@ validate_config
 ensure_dirs
 
 SELECTION_FILE="${STATE_DIR}/selected-apps.env"
+RECONFIGURE="${RECONFIGURE:-false}"
 
 usage() {
     cat <<EOF_USAGE
 Fedora Server Home Services Setup
 
 Usage:
-  sudo ./install.sh              Interactive installation
-  sudo ./install.sh --all        Install all available applications
-  sudo ./install.sh --app NAME   Install one application
-  sudo ./install.sh --list       List available applications
-  sudo ./install.sh --help       Show this help
+  sudo ./install.sh                     Interactive installation/update
+  sudo ./install.sh --all               Install/update all applications
+  sudo ./install.sh --app NAME          Install/update one application
+  sudo ./install.sh --reconfigure       Re-apply managed configuration and recreate selected containers
+  sudo ./install.sh --all --reconfigure Install/update all applications and force container recreation
+  sudo ./install.sh --list              List available applications
+  sudo ./install.sh --help              Show this help
 
 The infrastructure prerequisites are always checked and configured first.
-Applications are Docker Compose applications only.
+Managed configuration files are written from the repository on every run.
+Application containers are recreated only when required, unless --reconfigure is used.
+Application data is kept in /opt/fedora-server-apps and is not removed by --reconfigure.
 EOF_USAGE
 }
 
@@ -57,14 +62,6 @@ save_selection() {
 SELECTED_APPS=$(printf '%q' "$selected")
 EOF_SELECTION
     chmod 600 "$SELECTION_FILE"
-}
-
-load_saved_selection() {
-    if [[ -f "$SELECTION_FILE" ]]; then
-        # shellcheck disable=SC1090
-        source "$SELECTION_FILE"
-        printf '%s' "${SELECTED_APPS:-}"
-    fi
 }
 
 select_apps_interactive() {
@@ -132,6 +129,11 @@ show_final_selection() {
     else
         echo "  - none"
     fi
+    if [[ "$RECONFIGURE" == true ]]; then
+        echo
+        echo "RECONFIGURE mode: managed application containers will be force-recreated."
+        echo "Persistent application data is not deleted."
+    fi
     echo
     echo "Starting installation in 4 seconds..."
     sleep 4
@@ -172,6 +174,8 @@ run_installation() {
     local selected="$1"
     check_updates_first
 
+    export RECONFIGURE
+
     run_stage "01-system.sh"
     run_stage "02-proxmox.sh"
     run_stage "03-network.sh"
@@ -183,7 +187,7 @@ run_installation() {
     for app_id in $selected; do
         validate_app_id "$app_id"
         write_install_state "app:${app_id}" false
-        log "Installing application: ${app_id}"
+        log "Installing/updating application: ${app_id}"
         install_app "$app_id"
     done
 
@@ -193,9 +197,9 @@ run_installation() {
 
     echo
     echo "========================================"
-    echo " Installation completed"
+    echo " Installation/update completed"
     echo "========================================"
-    echo "Selected applications were installed and verified."
+    echo "Managed configuration has been reconciled with the repository."
 }
 
 main() {
@@ -211,6 +215,9 @@ main() {
                 [[ $# -gt 0 ]] || die "--app requires an application name."
                 mode="app"
                 app_arg="$1"
+                ;;
+            --reconfigure)
+                RECONFIGURE=true
                 ;;
             --list)
                 mode="list"
@@ -247,7 +254,6 @@ main() {
             ;;
     esac
 
-    # Re-read the saved selection so the infrastructure stages can use it.
     save_selection "$selected"
     show_final_selection "$selected"
     run_installation "$selected"

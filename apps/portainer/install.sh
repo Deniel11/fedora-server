@@ -17,14 +17,13 @@ PORTAINER_PORT=${PORTAINER_PORT}
 EOF_ENV
 chmod 600 "${runtime}/.env"
 
-if app_is_installed portainer && app_is_running portainer && app_is_current portainer; then
+if [[ "${RECONFIGURE:-false}" != "true" ]] && app_is_installed portainer && app_is_running portainer && app_is_current portainer; then
     log "${APP_NAME} is already installed and running; skipping container recreation."
 else
-    log "Starting ${APP_NAME} with Docker Compose."
+    log "Starting/updating ${APP_NAME} with Docker Compose."
     app_compose_up portainer
 fi
 
-# Marker means the application was configured by this installer.
 app_write_state "portainer"
 
 verify_app portainer
