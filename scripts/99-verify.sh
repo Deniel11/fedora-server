@@ -34,9 +34,11 @@ check() {
     local label="$1"
     shift
     if "$@" >/dev/null 2>&1; then
-        printf '[ OK ] %s\n' "$label"
+        printf '[ OK ] %s
+' "$label"
     else
-        printf '[FAIL] %s\n' "$label"
+        printf '[FAIL] %s
+' "$label"
         FAILURES=$((FAILURES + 1))
     fi
 }
@@ -46,26 +48,32 @@ check "Nginx service" systemctl is-active --quiet nginx
 check "Nginx configuration" nginx -t
 
 if systemctl is-active --quiet cockpit.socket; then
-    printf '[ OK ] Cockpit socket\n'
+    printf '[ OK ] Cockpit socket
+'
 else
-    printf '[WARN] Cockpit socket is not active\n'
+    printf '[WARN] Cockpit socket is not active
+'
 fi
 
 for app_id in $(app_ids); do
     app_is_installed "$app_id" || continue
     load_app_config "$app_id" || continue
     if app_is_running "$app_id"; then
-        printf '[ OK ] %s container is running\n' "$APP_NAME"
+        printf '[ OK ] %s container is running
+' "$APP_NAME"
     else
-        printf '[FAIL] %s container is not running\n' "$APP_NAME"
+        printf '[FAIL] %s container is not running
+' "$APP_NAME"
         FAILURES=$((FAILURES + 1))
     fi
 
     if [[ " ${selected_apps} " == *" ${app_id} "* ]]; then
         if verify_app "$app_id" >/dev/null 2>&1; then
-            printf '[ OK ] %s application health check\n' "$APP_NAME"
+            printf '[ OK ] %s application health check
+' "$APP_NAME"
         else
-            printf '[FAIL] %s application health check\n' "$APP_NAME"
+            printf '[FAIL] %s application health check
+' "$APP_NAME"
             FAILURES=$((FAILURES + 1))
         fi
     fi
@@ -75,23 +83,20 @@ echo
 echo "========================================"
 echo " Addresses"
 echo "========================================"
-echo "Proxmox        : https://${PROXMOX_IP}:${PROXMOX_PORT}"
-echo "Fedora/Cockpit : https://${FEDORA_DOMAIN}:${FEDORA_PORT}"
+echo "Proxmox        : https://${PROXMOX_DOMAIN}"
+echo "Fedora/Cockpit : https://${FEDORA_DOMAIN}"
 
 for app_id in $(app_ids); do
     app_is_installed "$app_id" || continue
     load_app_config "$app_id" || continue
-    printf '%-15s: https://%s\n' "${APP_NAME}" "${APP_DOMAIN}"
+    printf '%-15s: https://%s
+' "${APP_NAME}" "${APP_DOMAIN}"
 done
 
 echo
-echo "By IP before DNS is ready:"
-echo "Cockpit        : https://${STATIC_IP}:${FEDORA_PORT}"
-for app_id in $(app_ids); do
-    app_is_installed "$app_id" || continue
-    load_app_config "$app_id" || continue
-    printf '%-15s: https://%s\n' "${APP_NAME}" "${STATIC_IP}"
-done
+echo "Backend addresses:"
+echo "Cockpit        : https://127.0.0.1:${FEDORA_PORT}"
+echo "Proxmox backend : https://${PROXMOX_IP}:${PROXMOX_PORT}"
 
 echo
 echo "DNS records for OPNsense/AdGuard:"
@@ -99,9 +104,10 @@ echo "  ${FEDORA_DOMAIN} -> ${STATIC_IP}"
 for app_id in $(app_ids); do
     app_is_installed "$app_id" || continue
     load_app_config "$app_id" || continue
-    printf '  %-20s -> %s\n' "${APP_DOMAIN}" "${STATIC_IP}"
+    printf '  %-20s -> %s
+' "${APP_DOMAIN}" "${STATIC_IP}"
 done
-echo "  ${PROXMOX_DOMAIN} -> ${PROXMOX_IP}"
+echo "  ${PROXMOX_DOMAIN} -> ${STATIC_IP}"
 
 echo
 echo "Local CA:"
@@ -109,8 +115,12 @@ echo "  ${TLS_DIR}/ca.crt"
 warn "Import ca.crt into client trust stores to remove HTTPS trust warnings."
 
 if (( FAILURES > 0 )); then
-    printf '\n[ERROR] Verification failed: %d check(s) failed.\n' "$FAILURES" >&2
+    printf '
+[ERROR] Verification failed: %d check(s) failed.
+' "$FAILURES" >&2
     exit 1
 fi
 
-printf '\n[ OK ] All critical verification checks passed.\n'
+printf '
+[ OK ] All critical verification checks passed.
+'
