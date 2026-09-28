@@ -96,7 +96,7 @@ godaddy_credentials_valid() {
 }
 
 ensure_godaddy_credentials() {
-    [[ "$DOMAIN_MODE" == "public" ]] || return 0
+    [[ "${DOMAIN_MODE:-local}" == "public" ]] || return 0
     godaddy_credentials_valid && return 0
 
     echo
