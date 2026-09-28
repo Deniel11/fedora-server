@@ -375,8 +375,7 @@ app_is_current() {
 
     [[ "$(cat "${runtime}/.config")" == "$(app_config_signature)" ]]
 
-    [[ "$(cat "${runtime}/.compose.sha256")" ==
-        "$(sha256sum "${source_dir}/compose.yml" | awk '{print $1}')" ]]
+    [[ "$(cat "${runtime}/.compose.sha256")" == "$(sha256sum "${source_dir}/compose.yml" | awk '{print $1}')" ]]
 }
 
 app_write_state() {
