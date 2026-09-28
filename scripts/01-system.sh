@@ -5,6 +5,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/00-common.sh"
 require_root
 require_fedora
 load_config
+load_domain_state
 validate_config
 ensure_dirs
 

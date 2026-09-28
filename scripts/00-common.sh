@@ -117,6 +117,9 @@ ensure_godaddy_credentials() {
 
 validate_config() {
     local name value app_id extra_port
+    DOMAIN_MODE="${DOMAIN_MODE:-local}"
+    BASE_DOMAIN="${BASE_DOMAIN:-}"
+    APP_SUBDOMAIN="${APP_SUBDOMAIN:-home}"
     local required=(PROXMOX_DOMAIN FEDORA_DOMAIN PROXMOX_PORT FEDORA_PORT)
 
     for name in "${required[@]}"; do
