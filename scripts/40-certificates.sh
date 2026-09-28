@@ -336,7 +336,6 @@ for domain in "${CERT_DOMAINS[@]}"; do
         --preferred-challenges dns \
         --manual-auth-hook "${STACK_DIR}/godaddy-dns-hook.sh auth" \
         --manual-cleanup-hook "${STACK_DIR}/godaddy-dns-hook.sh cleanup" \
-        --manual-public-ip-logging-ok \
         --non-interactive \
         --agree-tos \
         "${email_args[@]}" \
