@@ -5,12 +5,12 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../scripts" && pwd)/00-com
 require_root
 require_fedora
 load_config
+load_domain_state
 validate_config
 ensure_dirs
 load_app_config "portainer"
 
 app_prepare_runtime "portainer"
-
 runtime="$(app_runtime_dir portainer)"
 cat > "${runtime}/.env" <<EOF_ENV
 PORTAINER_PORT=${PORTAINER_PORT}
@@ -25,6 +25,5 @@ else
 fi
 
 app_write_state "portainer"
-
 verify_app portainer
 log "${APP_NAME} installation is complete."

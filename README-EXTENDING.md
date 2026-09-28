@@ -15,11 +15,7 @@ apps/myservice/
 └── nginx.conf
 ```
 
-Add the application's visible domain and host port to:
-
-```text
-config/domains.conf
-```
+Add the application's default visible domain and host port to `config/domains.conf`.
 
 For example:
 
@@ -42,85 +38,27 @@ APP_CERTIFICATE_ENABLED="true"
 APP_HEALTHCHECK_URL="http://127.0.0.1:${APP_PORT}/"
 ```
 
-The application will automatically appear in:
-
-```bash
-sudo ./install.sh
-```
-
-and:
-
-```bash
-sudo ./install.sh --list
-```
-
-No change to `install.sh`, `40-certificates.sh` or `05-nginx.sh` is required.
-
-## Application contract
-
-Every application should implement:
-
-```text
-is_installed
-install
-is_running
-verify
-```
-
-The common implementation is provided by `scripts/00-common.sh`.
-
-The application module provides the application-specific installation and verification details.
-
-### Idempotency
-
-An already healthy application should not be recreated on every installer run.
-
-Use:
-
-```bash
-if app_is_installed myservice && app_is_running myservice; then
-    log "My Service is already installed and running; skipping container recreation."
-else
-    app_compose_up myservice
-fi
-```
-
-Mark a successfully configured application with:
-
-```bash
-touch "$(app_runtime_dir myservice)/.installed"
-```
-
-## Compose requirements
-
-Applications must run through Docker Compose.
-
-Bind host ports to localhost whenever possible:
-
-```yaml
-ports:
-  - "127.0.0.1:${MYSERVICE_PORT}:8080"
-```
-
-Do not publish application ports directly to the LAN unless there is a deliberate reason to do so.
-
-The central configuration is responsible for the host port.
+The domain is automatically rewritten in public-domain mode. Do not hardcode `.home.example.com` into application modules.
 
 ## Nginx
 
-Use placeholders in `nginx.conf`:
+Use these placeholders in `nginx.conf`:
 
 ```text
 __APP_DOMAIN__
 __APP_PORT__
 __APP_TLS_NAME__
+__APP_CERTIFICATE__
+__APP_CERTIFICATE_KEY__
 ```
 
-The central Nginx stage replaces them and writes the result to:
+The central Nginx stage writes the final configuration to:
 
 ```text
 /etc/nginx/conf.d/myservice.conf
 ```
+
+`__APP_CERTIFICATE__` and `__APP_CERTIFICATE_KEY__` are local-CA paths in local mode and `/etc/letsencrypt/live/<hostname>/...` paths in public mode. This keeps application modules independent of the selected TLS implementation.
 
 If an application does not need Nginx, set:
 
@@ -136,54 +74,73 @@ If an application is served over HTTPS through Nginx, use:
 APP_CERTIFICATE_ENABLED="true"
 ```
 
-The central certificate stage automatically creates or refreshes the certificate for `APP_DOMAIN` and the current Fedora IP.
+The central certificate stage automatically creates/renews the certificate for `APP_DOMAIN`.
 
-For applications that do not need a certificate, set:
+In local mode the repository-generated CA is used. In public mode Let's Encrypt ACME HTTP-01 is used.
 
-```bash
-APP_CERTIFICATE_ENABLED="false"
+The application module must not generate its own certificate.
+
+## Domain configuration
+
+The installer persists the selected mode in:
+
+```text
+/etc/fedora-server-setup/domain.env
 ```
 
-## Storage
+A module receives its final `APP_DOMAIN` after `load_domain_state` is called. Application `install.sh` and `verify.sh` scripts that use domain variables should therefore call:
 
-Keep runtime data outside the Git repository.
+```bash
+load_config
+load_domain_state
+```
+
+before `load_app_config`.
+
+## Idempotency
+
+An already healthy application should not be recreated on every installer run.
 
 Use:
+
+```bash
+if app_is_installed myservice && app_is_running myservice && app_is_current myservice; then
+    log "My Service is already installed and running; skipping container recreation."
+else
+    app_compose_up myservice
+fi
+```
+
+Mark a successfully configured application with:
+
+```bash
+app_write_state myservice
+```
+
+## Compose requirements
+
+Applications must run through Docker Compose.
+
+Bind host ports to localhost whenever possible:
+
+```yaml
+ports:
+  - "127.0.0.1:${MYSERVICE_PORT}:8080"
+```
+
+Do not publish application ports directly to the LAN unless there is a deliberate reason to do so.
+
+## Storage and secrets
+
+Keep runtime data outside the Git repository, preferably under:
 
 ```text
 /opt/fedora-server-apps/<app>/
 ```
 
-for application data and Compose runtime files.
+Never commit passwords, databases, uploaded files, DNS credentials, ACME credentials, or private keys to Git.
 
-Do not put passwords, databases, uploaded files or private keys into Git.
-
-For storage-heavy applications such as Immich, Jellyfin or file management, prefer a dedicated storage path when the hardware is ready.
-
-## Domain and port collision checks
-
-The central configuration validator automatically checks for duplicate domains and host ports.
-
-Do not work around a collision by hardcoding a second port inside `compose.yml`. Change the central configuration instead.
-
-## Secrets
-
-If an application needs a secret:
-
-- generate it on the server
-- store it under `/etc/fedora-server-setup` or `/opt/fedora-server-apps`
-- use restrictive permissions
-- never commit it to Git
-
-Joplin is the reference example: its PostgreSQL password is generated or entered interactively and stored in the runtime `.env` file with mode `600`.
-
-## Existing data migration
-
-If an application already exists in an older repository layout, migrate its data before starting the new Compose project.
-
-Do not delete the old data automatically unless the migration has been verified.
-
-## Testing a new application
+## Testing
 
 At minimum:
 
@@ -199,11 +156,4 @@ Then use ShellCheck:
 shellcheck install.sh scripts/*.sh apps/*/*.sh
 ```
 
-Finally test:
-
-```bash
-sudo ./install.sh --app myservice
-sudo ./install.sh --app myservice
-```
-
-The second run should be a no-op for a healthy application.
+Finally test installation twice. The second run should not ask the domain/TLS questions again unless `--reconfigure-domain` is supplied.
