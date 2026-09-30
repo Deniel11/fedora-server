@@ -17,12 +17,7 @@ source "$NETWORK_STATE"
 app_is_running joplin ||
     die "${APP_NAME} container is not running."
 
-curl \
-    -kfsS \
-    --max-time 15 \
-    --resolve "${APP_DOMAIN}:443:${STATIC_IP}" \
-    "https://${APP_DOMAIN}/api/ping" >/dev/null ||
-    die "${APP_NAME} HTTPS health check failed."
+curl -fsS --max-time 15 http://${APP_DOMAIN}/api/ping >/dev/null || die "${APP_NAME} HTTPS health check failed."
 
 docker inspect -f '{{.State.Health.Status}}' joplin-postgres 2>/dev/null |
     grep -qx healthy ||
