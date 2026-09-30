@@ -57,7 +57,12 @@ api() {
 record_name_for_domain() {
     local domain="$1"
 
-    if [[ "$domain" == "$BASE_DOMAIN" ]]; then
+    # ACME DNS-01 always publishes the validation TXT at
+    # _acme-challenge.<zone>. Wildcard and non-wildcard identifiers for
+    # the same zone intentionally use the same record name.
+    domain="${domain#*.}"
+
+    if [[ "$domain" == "$BASE_DOMAIN" || "$CERTBOT_DOMAIN" == "*.${BASE_DOMAIN}" ]]; then
         printf '_acme-challenge'
         return
     fi
@@ -67,18 +72,61 @@ record_name_for_domain() {
 
     local prefix="${domain%.${BASE_DOMAIN}}"
 
-    printf '_acme-challenge.%s' "$prefix"
+    # For the application-zone wildcard, e.g. *.home.example.com,
+    # the correct record is _acme-challenge.home.example.com.
+    prefix="${prefix#*.}"
+    prefix="${prefix#\*}"
+
+    if [[ "$CERTBOT_DOMAIN" == "*."* ]]; then
+        prefix="${CERTBOT_DOMAIN#*.}"
+        prefix="${prefix%.${BASE_DOMAIN}}"
+    fi
+
+    if [[ -n "$prefix" ]]; then
+        printf '_acme-challenge.%s' "$prefix"
+    else
+        printf '_acme-challenge'
+    fi
 }
 
-case "${1:-}" in
+upsert_txt_record() {
+    local zone="$1"
+    local name="$2"
+    local validation="$3"
 
-    auth)
-        zone="$BASE_DOMAIN"
+    local records existing_json payload
 
-        name="$(record_name_for_domain "$CERTBOT_DOMAIN")"
+    records="$(
+        api \
+            -G \
+            "${API_BASE}/${zone}/records/TXT/${name}" \
+            2>/dev/null || printf '[]'
+    )"
 
-        payload="$(
-            python3 - "$name" "$CERTBOT_VALIDATION" "$DNS_TTL" <<'PY'
+    existing_json="$(
+        python3 - "$records" "$validation" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+wanted = sys.argv[2]
+
+if isinstance(payload, dict):
+    payload = [payload]
+
+for item in payload:
+    if item.get("type") == "TXT" and item.get("data") == wanted:
+        print("present")
+        break
+PY
+    )"
+
+    if [[ "$existing_json" == "present" ]]; then
+        return 0
+    fi
+
+    payload="$(
+        python3 - "$name" "$validation" "$DNS_TTL" <<'PY'
 import json
 import sys
 
@@ -91,25 +139,32 @@ print(json.dumps({
     "ttl": ttl
 }))
 PY
-        )"
+    )"
+
+    api \
+        -X POST \
+        "${API_BASE}/${zone}/dns-records" \
+        -H "Content-Type: application/json" \
+        --data "$payload" \
+        >/dev/null
+}
+
+case "${1:-}" in
+
+    auth)
+        zone="$BASE_DOMAIN"
+        name="$(record_name_for_domain "$CERTBOT_DOMAIN")"
 
         log "Creating GoDaddy TXT record ${name}.${zone}"
 
-        api \
-            -X POST \
-            "${API_BASE}/${zone}/dns-records" \
-            -H "Content-Type: application/json" \
-            --data "$payload" \
-            >/dev/null
+        upsert_txt_record "$zone" "$name" "$CERTBOT_VALIDATION"
 
         log "Waiting ${DNS_PROPAGATION_SECONDS}s for DNS propagation"
-
         sleep "$DNS_PROPAGATION_SECONDS"
         ;;
 
     cleanup)
         zone="$BASE_DOMAIN"
-
         name="$(record_name_for_domain "$CERTBOT_DOMAIN")"
 
         records="$(

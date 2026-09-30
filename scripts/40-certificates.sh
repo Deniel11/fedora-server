@@ -145,41 +145,126 @@ needs_regeneration() {
     return 1
 }
 
+legacy_host_cert_names() {
+    local base="$1"
+    local prefix="$2"
+
+    prefix="${prefix%.}"
+    prefix="${prefix#.}"
+
+    if [[ -n "$prefix" ]]; then
+        printf '%s\n' \
+            "fedora-server.${prefix}.${base}" \
+            "proxmox.${prefix}.${base}" \
+            "portainer.${prefix}.${base}" \
+            "vault.${prefix}.${base}" \
+            "joplin.${prefix}.${base}"
+    else
+        printf '%s\n' \
+            "fedora-server.${base}" \
+            "proxmox.${base}" \
+            "portainer.${base}" \
+            "vault.${base}" \
+            "joplin.${base}"
+    fi
+}
+
+legacy_public_cert_names() {
+    local base="$1"
+    local prefix="$2"
+
+    legacy_host_cert_names "$base" "$prefix"
+
+    prefix="${prefix%.}"
+    prefix="${prefix#.}"
+
+    if [[ -n "$prefix" ]]; then
+        printf '%s\n' "${prefix}.${base}"
+    else
+        printf '%s\n' "$base"
+    fi
+}
+
+certbot_delete_lineage() {
+    local cert_name="$1"
+
+    [[ -n "$cert_name" ]] || return 0
+
+    if [[ -x "${STACK_DIR}/certbot-venv/bin/certbot" ]]; then
+        "${STACK_DIR}/certbot-venv/bin/certbot" \
+            delete \
+            --cert-name "$cert_name" \
+            --non-interactive >/dev/null 2>&1 || true
+    elif command -v certbot >/dev/null 2>&1; then
+        certbot \
+            delete \
+            --cert-name "$cert_name" \
+            --non-interactive >/dev/null 2>&1 || true
+    fi
+}
+
+cleanup_legacy_tls() {
+    local old_mode="$1"
+    local old_base="$2"
+    local old_prefix="$3"
+    local old_zone=""
+
+    if [[ "$old_mode" == "local" ]]; then
+        if [[ -d "$TLS_DIR" ]]; then
+            log "Removing previous local CA/certificate material from ${TLS_DIR}"
+            find "$TLS_DIR" -mindepth 1 -maxdepth 1 -type f -delete
+        fi
+        return
+    fi
+
+    [[ "$old_mode" == "public" ]] || return 0
+    [[ -n "$old_base" ]] || return 0
+
+    old_prefix="${old_prefix%.}"
+    old_prefix="${old_prefix#.}"
+
+    if [[ -n "$old_prefix" ]]; then
+        old_zone="${old_prefix}.${old_base}"
+    else
+        old_zone="$old_base"
+    fi
+
+    log "Removing previous public certificate lineages for ${old_zone}"
+
+    while IFS= read -r cert_name; do
+        certbot_delete_lineage "$cert_name"
+    done < <(legacy_public_cert_names "$old_base" "$old_prefix")
+}
+
+cleanup_managed_legacy_public_certs() {
+    local base="$1"
+    local prefix="$2"
+
+    [[ -n "$base" ]] || return 0
+
+    log "Cleaning legacy host-by-host ACME certificates"
+
+    while IFS= read -r cert_name; do
+        certbot_delete_lineage "$cert_name"
+    done < <(legacy_host_cert_names "$base" "$prefix")
+}
+
 if [[ -f "${STATE_DIR}/domain-previous.env" ]]; then
     current_mode="$DOMAIN_MODE"
     current_base="$BASE_DOMAIN"
     current_prefix="$APP_SUBDOMAIN"
     current_email="${ACME_EMAIL:-}"
 
+    old_mode=""
+    old_base=""
+    old_prefix="home"
+
     source "${STATE_DIR}/domain-previous.env"
+    old_mode="${DOMAIN_MODE:-}"
+    old_base="${BASE_DOMAIN:-}"
+    old_prefix="${APP_SUBDOMAIN:-home}"
 
-    if [[ "${DOMAIN_MODE:-}" == "public" && -n "${BASE_DOMAIN:-}" ]]; then
-        old_prefix="${APP_SUBDOMAIN:-home}"
-        old_prefix="${old_prefix%.}"
-        old_prefix="${old_prefix#.}"
-
-        old_hosts=(
-            "fedora-server.${old_prefix}.${BASE_DOMAIN}"
-            "proxmox.${old_prefix}.${BASE_DOMAIN}"
-            "portainer.${old_prefix}.${BASE_DOMAIN}"
-            "vault.${old_prefix}.${BASE_DOMAIN}"
-            "joplin.${old_prefix}.${BASE_DOMAIN}"
-        )
-
-        for old_domain in "${old_hosts[@]}"; do
-            if [[ -x "${STACK_DIR}/certbot-venv/bin/certbot" ]]; then
-                "${STACK_DIR}/certbot-venv/bin/certbot" \
-                    delete \
-                    --cert-name "$old_domain" \
-                    --non-interactive >/dev/null 2>&1 || true
-            elif command -v certbot >/dev/null 2>&1; then
-                certbot \
-                    delete \
-                    --cert-name "$old_domain" \
-                    --non-interactive >/dev/null 2>&1 || true
-            fi
-        done
-    fi
+    cleanup_legacy_tls "$old_mode" "$old_base" "$old_prefix"
 
     rm -f "${STATE_DIR}/domain-previous.env"
 
@@ -189,7 +274,6 @@ if [[ -f "${STATE_DIR}/domain-previous.env" ]]; then
     ACME_EMAIL="$current_email"
 
     load_config
-
     DOMAIN_MODE="$current_mode"
     BASE_DOMAIN="$current_base"
     APP_SUBDOMAIN="$current_prefix"
@@ -260,12 +344,11 @@ if [[ "$DOMAIN_MODE" == "local" ]]; then
     exit 0
 fi
 
-#
 # Public mode:
-# Let's Encrypt DNS-01 validation through the GoDaddy v3 DNS API.
+# One Let's Encrypt wildcard certificate for the complete application zone.
+# DNS-01 validation through the GoDaddy v3 DNS API.
 #
 # The Fedora server does NOT need to be reachable from the Internet.
-#
 
 dnf install -y python3 python3-pip curl
 
@@ -293,43 +376,45 @@ install \
 
 chmod 700 "${STACK_DIR}/godaddy-dns-hook.sh"
 
-mapfile -t CERT_DOMAINS < <(
-    printf '%s\n' \
-        "$FEDORA_DOMAIN" \
-        "$PROXMOX_DOMAIN"
+APP_ZONE="${APP_SUBDOMAIN%.}"
+APP_ZONE="${APP_ZONE#.}"
 
-    while IFS= read -r app_id; do
-        [[ -n "$app_id" ]] || continue
+if [[ -n "$APP_ZONE" ]]; then
+    APP_ZONE="${APP_ZONE}.${BASE_DOMAIN}"
+else
+    APP_ZONE="$BASE_DOMAIN"
+fi
 
-        load_app_config "$app_id" || continue
+PUBLIC_CERT_NAME="$APP_ZONE"
+PUBLIC_CERT_DIR="/etc/letsencrypt/live/${PUBLIC_CERT_NAME}"
 
-        [[ "${APP_CERTIFICATE_ENABLED:-true}" == "true" ]] &&
-            printf '%s\n' "$APP_DOMAIN"
-    done < <(app_list)
-)
+# The old implementation created one lineage per hostname. Remove those
+# managed lineages before/after the wildcard transition so they cannot remain
+# as stale configuration on the server.
+cleanup_managed_legacy_public_certs "$BASE_DOMAIN" "$APP_SUBDOMAIN"
 
-for domain in "${CERT_DOMAINS[@]}"; do
-    [[ -n "$domain" ]] || continue
-
-    if [[
-        -s "/etc/letsencrypt/live/${domain}/fullchain.pem" &&
-        -s "/etc/letsencrypt/live/${domain}/privkey.pem"
-    ]] &&
-        openssl x509 \
-            -checkend 86400 \
-            -noout \
-            -in "/etc/letsencrypt/live/${domain}/fullchain.pem" >/dev/null 2>&1
-    then
-        log "Public certificate for ${domain} already exists; leaving renewal to the systemd timer."
-        continue
-    fi
-
-    log "Requesting public ACME DNS-01 certificate for ${domain}"
+if [[
+    -s "${PUBLIC_CERT_DIR}/fullchain.pem" &&
+    -s "${PUBLIC_CERT_DIR}/privkey.pem"
+]] &&
+    openssl x509 \
+        -checkend 86400 \
+        -noout \
+        -in "${PUBLIC_CERT_DIR}/fullchain.pem" >/dev/null 2>&1
+then
+    log "Wildcard certificate ${PUBLIC_CERT_NAME} already exists; leaving renewal to the systemd timer."
+else
+    log "Requesting public wildcard ACME certificate for ${APP_ZONE}"
 
     email_args=()
 
     [[ -n "${ACME_EMAIL:-}" ]] &&
         email_args=(--email "$ACME_EMAIL")
+
+    cert_domains=(
+        -d "$APP_ZONE"
+        -d "*.${APP_ZONE}"
+    )
 
     "$CERTBOT" certonly \
         --manual \
@@ -340,7 +425,8 @@ for domain in "${CERT_DOMAINS[@]}"; do
         --agree-tos \
         "${email_args[@]}" \
         --keep-until-expiring \
-        -d "$domain"
-done
+        --cert-name "$PUBLIC_CERT_NAME" \
+        "${cert_domains[@]}"
+fi
 
-log "Public ACME TLS material is ready under /etc/letsencrypt/live/"
+log "Public wildcard TLS material is ready under ${PUBLIC_CERT_DIR}/"

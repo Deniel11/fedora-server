@@ -2,130 +2,271 @@
 
 Automated setup and configuration for a Fedora Server used as a small home-lab infrastructure server.
 
-## Domain and HTTPS modes
+## HTTPS design
 
-The installer stores the selected domain/TLS mode in `/etc/fedora-server-setup/domain.env`.
+The public-domain mode uses **one publicly trusted Let's Encrypt wildcard certificate** for the application zone.
 
-### Local mode
-
-The default remains the existing `.home` layout and a private local CA.
-
-### Public domain mode
-
-Example configuration:
+Example:
 
 ```text
-Base domain: danielczank.eu
+Base domain: example.com
 Application subdomain: home
+
+Certificate:
+  *.home.example.com
+  home.example.com
 ```
 
-Resulting names:
+The wildcard covers:
 
 ```text
-https://fedora-server.home.danielczank.eu
-https://proxmox.home.danielczank.eu
-https://portainer.home.danielczank.eu
-https://vault.home.danielczank.eu
-https://joplin.home.danielczank.eu
+https://fedora-server.home.example.com
+https://proxmox.home.example.com
+https://portainer.home.example.com
+https://vault.home.example.com
+https://joplin.home.example.com
 ```
 
-Public mode obtains publicly trusted Let's Encrypt certificates automatically with ACME DNS-01. No client-side CA installation is required and the Fedora server does not need to expose TCP 80 to the Internet.
+The certificate also contains `home.example.com` as a separate SAN. This is intentional: a wildcard such as `*.home.example.com` does not cover `home.example.com` itself.
 
-## Required DNS setup for public certificates
+### Why this works without installing a local CA
 
-The registered domain must be managed by GoDaddy DNS (or the DNS zone must be delegated there), because the installer uses the GoDaddy DNS API to create temporary `_acme-challenge` TXT records for validation.
+The certificates are issued by Let's Encrypt, which is already trusted by normal operating systems and browsers.
 
-The application names still need to resolve to the Fedora Server from your LAN. This can be handled by the router/local DNS. Public DNS does not need to point these names to the home public IP for certificate validation.
+Certificate issuance and renewal use the **ACME DNS-01 challenge**. The Fedora server therefore does **not** need to be reachable from the public Internet.
 
-For example, your local DNS can resolve:
+GoDaddy is used only as the authoritative DNS provider for the temporary `_acme-challenge` TXT record.
+
+## DNS: what you need
+
+You do **not** need to create every application hostname in GoDaddy.
+
+### Public DNS
+
+GoDaddy only needs to host the authoritative zone and allow the installer to create `_acme-challenge` TXT records through its API.
+
+Do not expose the private Fedora Server address in public DNS unless you have a specific reason to do so.
+
+### LAN DNS
+
+Your router, Pi-hole, AdGuard Home, dnsmasq, or another local DNS server should resolve the service names to the correct private addresses.
+
+For this installation, the Fedora Server is:
 
 ```text
-fedora-server.home.danielczank.eu -> Fedora Server private IP
-proxmox.home.danielczank.eu       -> Proxmox IP
-portainer.home.danielczank.eu     -> Fedora Server private IP
-vault.home.danielczank.eu         -> Fedora Server private IP
-joplin.home.danielczank.eu        -> Fedora Server private IP
+192.168.1.20
 ```
 
-No TCP 80 port-forward is required for certificate issuance or renewal. TCP 443 is only required if you want to access the services from outside your LAN.
+Example LAN records:
 
-### GoDaddy API credentials
+```text
+fedora-server.home.example.com -> 192.168.1.20
+portainer.home.example.com     -> 192.168.1.20
+vault.home.example.com         -> 192.168.1.20
+joplin.home.example.com        -> 192.168.1.20
+proxmox.home.example.com       -> <PROXMOX-IP>
+```
 
-Public mode asks for a GoDaddy API key and secret on the first configuration. They are stored only on the Fedora server at:
+The clients must use that LAN DNS server.
+
+### Router/firewall
+
+For a LAN-only installation:
+
+- do **not** forward TCP 80 from the Internet to the Fedora Server;
+- do **not** forward TCP 443 from the Internet to the Fedora Server;
+- allow TCP 443 from your LAN to `192.168.1.20`;
+- allow the required internal DNS traffic to your LAN DNS server.
+
+Let's Encrypt does not need to connect to the Fedora Server during DNS-01 validation.
+
+## GoDaddy API credentials
+
+Public mode asks for a GoDaddy Personal Access Token.
+
+The token is stored only on the server:
 
 ```text
 /etc/fedora-server-setup/godaddy.ini
 ```
 
-The file is owned by root and has mode `600`. The credentials are used by Certbot to create and remove the DNS TXT records required by DNS-01. The repository never stores them.
+The file is root-owned and mode `600`.
 
-The installer uses the `certbot-dns-godaddy` plugin and waits 120 seconds for DNS propagation before validation. DNS-01 is also the ACME validation method that supports wildcard certificates.
+Use the narrowest DNS permission available for the token. The setup expects permission to update DNS records for the zone.
+
+The token is never stored in this repository.
+
+## Certificate layout
+
+Public mode uses one certificate lineage:
+
+```text
+/etc/letsencrypt/live/home.example.com/fullchain.pem
+/etc/letsencrypt/live/home.example.com/privkey.pem
+```
+
+The exact path is derived from your configured application zone.
+
+All managed Nginx virtual hosts use the same certificate and private key.
+
+Renewal is handled by the systemd timer created by the Nginx stage. When Certbot successfully renews the wildcard certificate, Nginx is reloaded automatically.
+
+## Automatic migration from the old certificate model
+
+Earlier versions of this repository created one Let's Encrypt certificate per hostname.
+
+The current certificate stage automatically cleans up those **managed** legacy lineages when it runs in public mode. It also removes the old repository-generated local CA/certificates when switching from local mode to public mode.
+
+The cleanup is limited to certificate names owned by this repository. It does not remove Docker volumes, application data, or unrelated certificates.
+
+If the domain configuration itself is changed with `--reconfigure-domain`, the previous domain state is also reconciled automatically.
 
 ## Installation
+
+Clone the repository and run:
 
 ```bash
 git clone https://github.com/Deniel11/fedora-server.git
 cd fedora-server
+
 chmod +x install.sh bootstrap.sh update-repo.sh scripts/*.sh
+
 sudo ./install.sh
 ```
 
-To install everything:
+To install/update all applications:
 
 ```bash
 sudo ./install.sh --all
 ```
 
-To change the saved domain/TLS configuration:
+To explicitly select public HTTPS during setup:
 
 ```bash
 sudo ./install.sh --reconfigure-domain
 ```
 
-For a full application reconciliation after a domain change:
+Choose:
 
-```bash
-sudo ./install.sh --all --reconfigure
+```text
+2) Public domain + trusted ACME certificates
 ```
 
-## Updating an existing server
+Then enter values similar to:
+
+```text
+Base domain: example.com
+Application subdomain prefix: home
+ACME contact email: admin@example.com
+```
+
+The actual domain used in your installation can be any domain you control; `example.com` is only documentation.
+
+The installer will ask for the GoDaddy PAT if one is not already stored.
+
+## Updating an existing installation
+
+Update the repository files:
 
 ```bash
 sudo /opt/fedora-server-setup/update-repo.sh
+```
+
+Then reconcile the managed configuration:
+
+```bash
 sudo /opt/fedora-server-setup/install.sh --all --reconfigure
 ```
 
-## DNS responsibility
+For a domain/TLS change:
 
-The repository manages the Fedora Server side only. DNS remains outside the installer.
-
-For local mode, local DNS should point the `.home` names to the appropriate private IPs.
-
-For public mode, the registered domain must be managed through GoDaddy DNS (or delegated to GoDaddy DNS) so the installer can automate ACME DNS-01 validation. No inbound TCP 80 is required.
-
-## TLS certificate locations
-
-Local mode:
-
-```text
-/etc/fedora-server-setup/tls/
+```bash
+sudo /opt/fedora-server-setup/install.sh --reconfigure-domain
 ```
 
-Public mode:
+If you are migrating an existing installation from the old per-host certificate model, the normal `--all --reconfigure` run is sufficient after installing the updated repository.
 
-```text
-/etc/letsencrypt/live/<hostname>/
+## What the installer manages
+
+The repository manages:
+
+- Fedora packages required by the stack;
+- Proxmox and Fedora network state;
+- Docker and application containers;
+- Nginx reverse-proxy configuration;
+- local CA certificates in local mode;
+- the Let's Encrypt wildcard certificate in public mode;
+- the GoDaddy DNS-01 challenge hook;
+- automatic certificate renewal;
+- removal of stale managed Nginx configuration.
+
+The repository does **not** manage:
+
+- your router's port forwarding;
+- your LAN DNS records;
+- your GoDaddy domain registration;
+- your GoDaddy DNS delegation;
+- your application data outside the repository.
+
+## Manual steps required outside the installer
+
+For public HTTPS, complete these steps:
+
+1. Own/control the public domain.
+2. Make sure its authoritative DNS is GoDaddy DNS.
+3. Create a GoDaddy PAT with DNS update permission.
+4. Run the installer in public mode and enter the PAT.
+5. Configure your LAN DNS so each service hostname resolves to its internal IP.
+6. Point the Fedora service names to `192.168.1.20`.
+7. Point the Proxmox hostname to the Proxmox private IP.
+8. Make sure clients use the LAN DNS server.
+9. Do not create Internet port forwards unless you intentionally want external access.
+10. After installation, verify HTTPS from at least one browser/device.
+
+## Verification
+
+Check the installed state:
+
+```bash
+sudo /opt/fedora-server-setup/install.sh --list
 ```
 
-Public certificates are checked/renewed automatically by a systemd timer installed by the Nginx stage. Renewal also uses DNS-01 and therefore does not require an HTTP listener on port 80.
+Check Nginx:
 
-## Safety and persistence
+```bash
+sudo nginx -t
+sudo systemctl status nginx
+```
 
-* Application data is stored outside the repository.
-* Domain configuration and GoDaddy credentials are stored outside the repository.
-* Docker application data is not removed during domain changes.
-* Managed Nginx files are regenerated from the repository.
-* Certificates are renewed before expiry.
+Check the certificate:
+
+```bash
+sudo /opt/fedora-server-setup/certbot-venv/bin/certbot certificates
+```
+
+Check the renewal timer:
+
+```bash
+systemctl status fedora-server-certbot-renew.timer
+systemctl list-timers fedora-server-certbot-renew.timer
+```
+
+You can perform a renewal simulation with:
+
+```bash
+sudo /opt/fedora-server-setup/certbot-venv/bin/certbot renew --dry-run
+```
+
+The dry run still uses the configured DNS-01 hook, so GoDaddy API access must work.
+
+## Security notes
+
+- Keep the GoDaddy PAT private.
+- Do not commit `/etc/fedora-server-setup/godaddy.ini`.
+- Prefer a narrowly scoped DNS credential.
+- Do not expose the Fedora Server publicly just to obtain a certificate.
+- Keep TCP 443 LAN-only if these services are intended to remain private.
+- The wildcard private key is shared by all managed Nginx virtual hosts. Protect `/etc/letsencrypt` accordingly.
 
 ## Repository structure
 

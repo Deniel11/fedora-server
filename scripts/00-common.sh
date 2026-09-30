@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="${REPO_ROOT}/config/domains.conf"
 STATE_DIR="/etc/fedora-server-setup"
@@ -475,14 +476,32 @@ certificate_mode() {
         printf 'local-ca'
 }
 
+public_certificate_name() {
+    local zone="${APP_SUBDOMAIN%.}"
+    zone="${zone#.}"
+
+    if [[ -n "$zone" ]]; then
+        printf '%s.%s' "$zone" "$BASE_DOMAIN"
+    else
+        printf '%s' "$BASE_DOMAIN"
+    fi
+}
+
+public_certificate_path() {
+    printf '/etc/letsencrypt/live/%s/fullchain.pem' "$(public_certificate_name)"
+}
+
+public_certificate_key_path() {
+    printf '/etc/letsencrypt/live/%s/privkey.pem' "$(public_certificate_name)"
+}
+
 app_certificate_path() {
     local app_id="$1"
-    local cert
 
     load_app_config "$app_id" || return 1
 
     if [[ "$DOMAIN_MODE" == "public" ]]; then
-        printf '/etc/letsencrypt/live/%s/fullchain.pem' "$APP_DOMAIN"
+        public_certificate_path
     else
         printf '%s/%s.crt' "$TLS_DIR" "$APP_TLS_NAME"
     fi
@@ -494,7 +513,7 @@ app_certificate_key_path() {
     load_app_config "$app_id" || return 1
 
     if [[ "$DOMAIN_MODE" == "public" ]]; then
-        printf '/etc/letsencrypt/live/%s/privkey.pem' "$APP_DOMAIN"
+        public_certificate_key_path
     else
         printf '%s/%s.key' "$TLS_DIR" "$APP_TLS_NAME"
     fi
@@ -503,10 +522,9 @@ app_certificate_key_path() {
 infra_certificate_path() {
     local name="$1"
     local domain_var="$2"
-    local domain="${!domain_var}"
 
     if [[ "$DOMAIN_MODE" == "public" ]]; then
-        printf '/etc/letsencrypt/live/%s/fullchain.pem' "$domain"
+        public_certificate_path
     else
         printf '%s/%s.crt' "$TLS_DIR" "$name"
     fi
@@ -515,10 +533,9 @@ infra_certificate_path() {
 infra_certificate_key_path() {
     local name="$1"
     local domain_var="$2"
-    local domain="${!domain_var}"
 
     if [[ "$DOMAIN_MODE" == "public" ]]; then
-        printf '/etc/letsencrypt/live/%s/privkey.pem' "$domain"
+        public_certificate_key_path
     else
         printf '%s/%s.key' "$TLS_DIR" "$name"
     fi
