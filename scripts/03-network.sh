@@ -8,6 +8,11 @@ ensure_dirs
 
 command -v nmcli >/dev/null 2>&1 || die "NetworkManager/nmcli is not available."
 
+if [[ "${NETWORK_RECONFIGURE:-false}" != "true" ]]; then
+    log "Network settings are not selected for modification; keeping the saved configuration."
+    exit 0
+fi
+
 mapfile -t active_connections < <(
     nmcli -t -f NAME,DEVICE,TYPE connection show --active |
     awk -F: '$3=="802-3-ethernet" || $3=="wifi" {print $1 "|" $2}'
@@ -140,7 +145,6 @@ echo "Your current SSH/Cockpit session may disconnect."
 echo "Wait about 10 seconds, reconnect to the new IP, then run:"
 echo
 echo "  sudo ${STACK_DIR}/install.sh"
-echo
 echo "The installer will detect the completed network stage and continue."
 echo
 sleep 10

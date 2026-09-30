@@ -10,6 +10,11 @@ load_config
 validate_config
 ensure_dirs
 
+if [[ "${PROXMOX_RECONFIGURE:-false}" != "true" ]]; then
+    log "Proxmox settings are not selected for modification; keeping the saved value."
+    exit 0
+fi
+
 previous=""
 
 if [[ -f "$PROXMOX_STATE" ]]; then
