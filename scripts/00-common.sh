@@ -280,6 +280,18 @@ load_app_config() {
     local app_id="$1"
     local conf
 
+    unset \
+        APP_ID \
+        APP_NAME \
+        APP_DOMAIN \
+        APP_PORT \
+        APP_EXTRA_PORTS \
+        APP_CONTAINER \
+        APP_TLS_NAME \
+        APP_NGINX_ENABLED \
+        APP_CERTIFICATE_ENABLED \
+        APP_HEALTHCHECK_URL
+
     conf="$(app_dir "$app_id")/app.conf"
 
     [[ -f "$conf" ]] || die "Missing application configuration: $conf"
