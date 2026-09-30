@@ -1,214 +1,40 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-
 STATE_DIR="/etc/fedora-server-setup"
 CREDENTIALS_FILE="${STATE_DIR}/godaddy.ini"
-
-API_BASE="https://api.godaddy.com/v3/domains/zones"
-
-DNS_TTL="${GODADDY_DNS_TTL:-600}"
-DNS_PROPAGATION_SECONDS="${GODADDY_DNS_PROPAGATION_SECONDS:-600}"
-
-die() {
-    printf '\n[ERROR] %s\n' "$*" >&2
-    exit 1
-}
-
-log() {
-    printf '\n[INFO] %s\n' "$*"
-}
-
-[[ -r "$CREDENTIALS_FILE" ]] ||
-    die "Missing GoDaddy PAT file: $CREDENTIALS_FILE"
-
-source "$CREDENTIALS_FILE"
-
-[[ -n "${GODADDY_PAT:-}" ]] ||
-    die "GODADDY_PAT is missing from $CREDENTIALS_FILE"
-
-[[ -n "${CERTBOT_DOMAIN:-}" ]] ||
-    die "CERTBOT_DOMAIN is not set"
-
-[[ -n "${CERTBOT_VALIDATION:-}" ]] ||
-    die "CERTBOT_VALIDATION is not set"
-
 DOMAIN_STATE="${STATE_DIR}/domain.env"
-
-[[ -r "$DOMAIN_STATE" ]] ||
-    die "Missing domain state: $DOMAIN_STATE"
-
+API_BASE="https://api.godaddy.com/v3/domains/zones"
+DNS_TTL="${GODADDY_DNS_TTL:-600}"
+DNS_PROPAGATION_SECONDS="${GODADDY_DNS_PROPAGATION_SECONDS:-60}"
+die(){ printf '\n[ERROR] %s\n' "$*" >&2; exit 1; }
+log(){ printf '\n[INFO] %s\n' "$*"; }
+[[ -r "$CREDENTIALS_FILE" ]] || die "Missing GoDaddy PAT file: $CREDENTIALS_FILE"
+source "$CREDENTIALS_FILE"
+[[ -n "${GODADDY_PAT:-}" ]] || die "GODADDY_PAT is missing from $CREDENTIALS_FILE"
+[[ -r "$DOMAIN_STATE" ]] || die "Missing domain state: $DOMAIN_STATE"
 source "$DOMAIN_STATE"
-
-BASE_DOMAIN="${BASE_DOMAIN:-}"
-
-[[ -n "$BASE_DOMAIN" ]] ||
-    die "BASE_DOMAIN is empty; public mode is required."
-
-api() {
-    curl \
-        -fsS \
-        --retry 3 \
-        --retry-delay 2 \
-        -H "Authorization: Bearer ${GODADDY_PAT}" \
-        -H "Accept: application/json" \
-        "$@"
-}
-
-record_name_for_domain() {
-    local domain="$1"
-
-    # ACME DNS-01 always publishes the validation TXT at
-    # _acme-challenge.<zone>. Wildcard and non-wildcard identifiers for
-    # the same zone intentionally use the same record name.
-    domain="${domain#*.}"
-
-    if [[ "$domain" == "$BASE_DOMAIN" || "$CERTBOT_DOMAIN" == "*.${BASE_DOMAIN}" ]]; then
-        printf '_acme-challenge'
-        return
-    fi
-
-    [[ "$domain" == *".${BASE_DOMAIN}" ]] ||
-        die "Certificate domain $domain is outside BASE_DOMAIN=$BASE_DOMAIN"
-
-    local prefix="${domain%.${BASE_DOMAIN}}"
-
-    # For the application-zone wildcard, e.g. *.home.example.com,
-    # the correct record is _acme-challenge.home.example.com.
-    prefix="${prefix#*.}"
-    prefix="${prefix#\*}"
-
-    if [[ "$CERTBOT_DOMAIN" == "*."* ]]; then
-        prefix="${CERTBOT_DOMAIN#*.}"
-        prefix="${prefix%.${BASE_DOMAIN}}"
-    fi
-
-    if [[ -n "$prefix" ]]; then
-        printf '_acme-challenge.%s' "$prefix"
-    else
-        printf '_acme-challenge'
-    fi
-}
-
-upsert_txt_record() {
-    local zone="$1"
-    local name="$2"
-    local validation="$3"
-
-    local records existing_json payload
-
-    records="$(
-        api \
-            -G \
-            "${API_BASE}/${zone}/records/TXT/${name}" \
-            2>/dev/null || printf '[]'
-    )"
-
-    existing_json="$(
-        python3 - "$records" "$validation" <<'PY'
-import json
-import sys
-
-payload = json.loads(sys.argv[1])
-wanted = sys.argv[2]
-
-if isinstance(payload, dict):
-    payload = [payload]
-
-for item in payload:
-    if item.get("type") == "TXT" and item.get("data") == wanted:
-        print("present")
-        break
+BASE_DOMAIN="${BASE_DOMAIN:-}"; [[ -n "$BASE_DOMAIN" ]] || die 'BASE_DOMAIN is empty; public mode is required.'
+[[ -n "${CERTBOT_DOMAIN:-}" ]] || die 'CERTBOT_DOMAIN is not set'
+[[ -n "${CERTBOT_VALIDATION:-}" ]] || die 'CERTBOT_VALIDATION is not set'
+api_error(){ case "$1" in 401) die 'GoDaddy API returned HTTP 401: the stored PAT is invalid, expired, revoked, or malformed. Create a new PAT and replace /etc/fedora-server-setup/godaddy.ini.';;403) die 'GoDaddy API returned HTTP 403: the PAT is valid but lacks required permissions. Grant domains.domain:read and domains.dns:update.';;404) die "GoDaddy API returned HTTP 404: verify that ${BASE_DOMAIN} is hosted on GoDaddy authoritative DNS and accessible to this account.";;*) die "GoDaddy API request failed with HTTP $1: $2";;esac; }
+request(){ local method="$1"; shift; local f status; f="$(mktemp)"; status="$(curl -sS -o "$f" -w '%{http_code}' --request "$method" --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 30 -H "Authorization: Bearer ${GODADDY_PAT}" -H 'Accept: application/json' "$@")"; if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then local body; body="$(cat "$f")"; rm -f "$f"; api_error "$status" "$body"; fi; cat "$f"; rm -f "$f"; }
+record_name(){ local d="$1" rel; d="${d#*.}"; if [[ "$d" == "$BASE_DOMAIN" ]]; then printf '_acme-challenge'; return; fi; [[ "$d" == *".${BASE_DOMAIN}" ]] || die "Certificate domain $d is outside BASE_DOMAIN=$BASE_DOMAIN"; rel="${d%.${BASE_DOMAIN}}"; rel="${rel%.}"; [[ -n "$rel" ]] && printf '_acme-challenge.%s' "$rel" || printf '_acme-challenge'; }
+preflight(){ log "Checking GoDaddy API access for ${BASE_DOMAIN}"; request GET "${API_BASE}/${BASE_DOMAIN}/dns-records?type=TXT&name=_acme-challenge&page=1&pageSize=1" >/dev/null; log 'GoDaddy API authentication and DNS read access are working.'; }
+find_record(){ local zone="$1" name="$2" wanted="$3" response; response="$(request GET "${API_BASE}/${zone}/dns-records?type=TXT&name=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=""))' "$name")&page=1&pageSize=100")"; python3 - "$response" "$wanted" <<'PY'
+import json,sys
+for item in json.loads(sys.argv[1]).get('items',[]):
+    if item.get('type')=='TXT' and item.get('data')==sys.argv[2]:
+        print(item.get('recordId','')); break
 PY
-    )"
-
-    if [[ "$existing_json" == "present" ]]; then
-        return 0
-    fi
-
-    payload="$(
-        python3 - "$name" "$validation" "$DNS_TTL" <<'PY'
-import json
-import sys
-
-name, data, ttl = sys.argv[1], sys.argv[2], int(sys.argv[3])
-
-print(json.dumps({
-    "type": "TXT",
-    "name": name,
-    "data": data,
-    "ttl": ttl
-}))
-PY
-    )"
-
-    api \
-        -X POST \
-        "${API_BASE}/${zone}/dns-records" \
-        -H "Content-Type: application/json" \
-        --data "$payload" \
-        >/dev/null
 }
-
+add_record(){ local zone="$1" name="$2" value="$3" payload; payload="$(python3 - "$name" "$value" "$DNS_TTL" <<'PY'
+import json,sys
+print(json.dumps({'type':'TXT','name':sys.argv[1],'data':sys.argv[2],'ttl':int(sys.argv[3])}))
+PY
+)"; request POST "${API_BASE}/${zone}/dns-records" -H 'Content-Type: application/json' --data "$payload" >/dev/null; }
+delete_record(){ request DELETE "${API_BASE}/$1/dns-records/$2" >/dev/null; }
 case "${1:-}" in
-
-    auth)
-        zone="$BASE_DOMAIN"
-        name="$(record_name_for_domain "$CERTBOT_DOMAIN")"
-
-        log "Creating GoDaddy TXT record ${name}.${zone}"
-
-        upsert_txt_record "$zone" "$name" "$CERTBOT_VALIDATION"
-
-        log "Waiting ${DNS_PROPAGATION_SECONDS}s for DNS propagation"
-        sleep "$DNS_PROPAGATION_SECONDS"
-        ;;
-
-    cleanup)
-        zone="$BASE_DOMAIN"
-        name="$(record_name_for_domain "$CERTBOT_DOMAIN")"
-
-        records="$(
-            api \
-                -G \
-                "${API_BASE}/${zone}/dns-records" \
-                --data-urlencode "type=TXT" \
-                --data-urlencode "name=${name}" \
-                --data-urlencode "page=1" \
-                --data-urlencode "pageSize=100"
-        )"
-
-        mapfile -t record_ids < <(
-            python3 - "$records" "$CERTBOT_VALIDATION" <<'PY'
-import json
-import sys
-
-payload = json.loads(sys.argv[1])
-wanted = sys.argv[2]
-
-for item in payload.get("items", []):
-    if (
-        item.get("type") == "TXT"
-        and item.get("data") == wanted
-        and item.get("recordId")
-    ):
-        print(item["recordId"])
-PY
-        )
-
-        for record_id in "${record_ids[@]}"; do
-            [[ -n "$record_id" ]] || continue
-
-            log "Removing GoDaddy TXT record ${name}.${zone} (${record_id})"
-
-            api \
-                -X DELETE \
-                "${API_BASE}/${zone}/dns-records/${record_id}" \
-                >/dev/null || true
-        done
-        ;;
-
-    *)
-        die "Usage: $0 {auth|cleanup}"
-        ;;
-
+ auth) zone="$BASE_DOMAIN"; name="$(record_name "$CERTBOT_DOMAIN")"; preflight; log "Creating GoDaddy TXT record ${name}.${zone}"; existing="$(find_record "$zone" "$name" "$CERTBOT_VALIDATION" || true)"; [[ -n "$existing" ]] || add_record "$zone" "$name" "$CERTBOT_VALIDATION"; log "Waiting ${DNS_PROPAGATION_SECONDS}s for DNS propagation"; sleep "$DNS_PROPAGATION_SECONDS";;
+ cleanup) zone="$BASE_DOMAIN"; name="$(record_name "$CERTBOT_DOMAIN")"; existing="$(find_record "$zone" "$name" "$CERTBOT_VALIDATION" || true)"; [[ -n "$existing" ]] && { log "Removing GoDaddy TXT record ${name}.${zone} (${existing})"; delete_record "$zone" "$existing"; };;
+ *) die "Usage: $0 {auth|cleanup}";;
 esac
