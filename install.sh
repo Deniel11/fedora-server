@@ -628,6 +628,131 @@ modify_godaddy_pat() {
     echo "GoDaddy PAT saved. The value remains hidden."
 }
 
+install_application() {
+    local app_id
+    local answer
+    local selected
+    local installed
+    local available=()
+    local choice
+    local item
+
+    load_domain_state
+
+    while IFS= read -r app_id; do
+        [[ -n "$app_id" ]] || continue
+
+        if ! app_is_installed "$app_id"; then
+            available+=("$app_id")
+        fi
+    done < <(app_ids)
+
+    echo
+    echo "========================================"
+    echo " Install an application"
+    echo "========================================"
+    echo
+
+    if ((${#available[@]} == 0)); then
+        echo "All available applications are already installed."
+        return
+    fi
+
+    echo "Applications available for installation:"
+    echo
+
+    for item in "${!available[@]}"; do
+        app_id="${available[$item]}"
+
+        load_app_config "$app_id"
+
+        printf '  %d) %s (%s, host port %s)\n' \
+            "$((item + 1))" \
+            "$APP_NAME" \
+            "$APP_ID" \
+            "$APP_PORT"
+    done
+
+    echo
+    echo "Enter one or more numbers separated by spaces."
+    echo "Example: 1 3"
+    echo
+
+    read -r -p "Choose applications to install: " choice
+
+    [[ -n "$choice" ]] ||
+        die "No application was selected."
+
+    selected=""
+
+    for item in $choice; do
+        [[ "$item" =~ ^[0-9]+$ ]] ||
+            die "Invalid application selection: $item"
+
+        ((item >= 1 && item <= ${#available[@]})) ||
+            die "Application selection is outside the available range: $item"
+
+        app_id="${available[$((item - 1))]}"
+
+        if [[ " $selected " == *" $app_id "* ]]; then
+            continue
+        fi
+
+        selected+="${selected:+ }${app_id}"
+    done
+
+    echo
+    echo "Applications selected for installation:"
+
+    for app_id in $selected; do
+        load_app_config "$app_id"
+        printf '  - %s (%s -> port %s)\n' \
+            "$APP_NAME" \
+            "$APP_DOMAIN" \
+            "$APP_PORT"
+    done
+
+    echo
+
+    read -r -p \
+        "Add these applications to the managed installation and install them now? [Y/n]: " \
+        answer
+
+    answer="${answer:-Y}"
+
+    [[ "$answer" =~ ^[Yy]$ ]] || {
+        echo "Application installation cancelled."
+        return
+    }
+
+    if [[ -f "$SELECTION_FILE" ]]; then
+        unset SELECTED_APPS
+        source "$SELECTION_FILE"
+    fi
+
+    installed="${SELECTED_APPS:-}"
+
+    for app_id in $selected; do
+        if [[ " $installed " != *" $app_id "* ]]; then
+            installed+="${installed:+ }${app_id}"
+        fi
+    done
+
+    save_selection "$installed"
+
+    RECONFIGURE=true
+    DOMAIN_RECONFIGURE=false
+    PROXMOX_RECONFIGURE=false
+    NETWORK_RECONFIGURE=false
+    APP_RECONFIGURE=false
+    GODADDY_RECONFIGURE=false
+
+    validate_config
+    show_plan "$installed"
+
+    run_installation "$installed"
+}
+
 modify_settings() {
     local selected
     local answer
@@ -937,12 +1062,13 @@ interactive_menu() {
     echo
     echo "  1) Update the existing installation"
     echo "  2) Modify saved settings and application selection"
-    echo "  3) Remove one application"
-    echo "  4) Remove the complete managed server package"
-    echo "  5) Exit without changes"
+    echo "  3) Install an application"
+    echo "  4) Remove one application"
+    echo "  5) Remove the complete managed server package"
+    echo "  6) Exit without changes"
     echo
 
-    read -r -p "Choose one action [1-5]: " action
+    read -r -p "Choose one action [1-6]: " action
 
     case "$action" in
         1)
@@ -952,12 +1078,15 @@ interactive_menu() {
             modify_settings
             ;;
         3)
-            remove_application
+            install_application
             ;;
         4)
-            remove_server_package
+            remove_application
             ;;
         5)
+            remove_server_package
+            ;;
+        6)
             echo "No changes made."
             ;;
         *)
