@@ -55,12 +55,14 @@ load_domain_state() {
             PORTAINER_DOMAIN="portainer.${prefix}.${BASE_DOMAIN}"
             VAULTWARDEN_DOMAIN="vault.${prefix}.${BASE_DOMAIN}"
             JOPLIN_DOMAIN="joplin.${prefix}.${BASE_DOMAIN}"
+            FORGEJO_DOMAIN="forgejo.${prefix}.${BASE_DOMAIN}"
         else
             FEDORA_DOMAIN="fedora-server.${BASE_DOMAIN}"
             PROXMOX_DOMAIN="proxmox.${BASE_DOMAIN}"
             PORTAINER_DOMAIN="portainer.${BASE_DOMAIN}"
             VAULTWARDEN_DOMAIN="vault.${BASE_DOMAIN}"
             JOPLIN_DOMAIN="joplin.${BASE_DOMAIN}"
+            FORGEJO_DOMAIN="forgejo.${BASE_DOMAIN}"
         fi
     fi
 }
