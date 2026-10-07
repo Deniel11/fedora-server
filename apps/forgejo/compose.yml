@@ -20,7 +20,7 @@ services:
       FORGEJO__other__SHOW_FOOTER_VERSION: false
       FORGEJO__server__LANDING_PAGE: explore
     volumes:
-      - ./data:/data
+     - ./data:/data:Z
       - /etc/localtime:/etc/localtime:ro
     ports:
       - "127.0.0.1:${FORGEJO_PORT}:3000"

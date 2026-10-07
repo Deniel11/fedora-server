@@ -15,6 +15,9 @@ runtime="$(app_runtime_dir forgejo)"
 install -d -m 0750 "$runtime" "$runtime/data"
 app_prepare_runtime "forgejo"
 
+chown 1000:1000 "$runtime/data"
+chmod 0750 "$runtime/data"
+
 env_file="${runtime}/.env"
 cat > "$env_file" <<EOF_ENV
 FORGEJO_DOMAIN=$(printf '%q' "$FORGEJO_DOMAIN")
