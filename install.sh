@@ -20,6 +20,9 @@ NETWORK_RECONFIGURE="${NETWORK_RECONFIGURE:-false}"
 APP_RECONFIGURE="${APP_RECONFIGURE:-false}"
 GODADDY_RECONFIGURE="${GODADDY_RECONFIGURE:-false}"
 
+RUNTIME_SOURCE_DIR="/opt/fedora-server-sources"
+UPDATE_SCRIPT="/usr/local/sbin/update-app.sh"
+
 usage() {
     cat <<'USAGE'
 Fedora Server Home Services Setup
@@ -231,7 +234,7 @@ show_apps() {
             printf '  - %s (%s, host port %s)\n' \
                 "$APP_NAME" \
                 "$APP_ID" \
-                "$APP_PORT"
+                "${APP_PORT:-not set}"
         fi
     done < <(app_ids)
 
@@ -247,9 +250,6 @@ validate_app_id() {
     [[ -f "$(app_dir "$app_id")/app.conf" ]] ||
         die "Application is incomplete: $app_id"
 
-    [[ -f "$(app_dir "$app_id")/compose.yml" ]] ||
-        die "Application is incomplete: $app_id"
-
     [[ -f "$(app_dir "$app_id")/install.sh" ]] ||
         die "Application is incomplete: $app_id"
 
@@ -258,6 +258,11 @@ validate_app_id() {
 
     load_app_config "$app_id" ||
         die "Application is disabled: $app_id"
+
+    if [[ "${APP_TYPE:-}" != "custom" ]]; then
+        [[ -f "$(app_dir "$app_id")/compose.yml" ]] ||
+            die "Application is incomplete: $app_id"
+    fi
 }
 
 write_domain_state_interactive() {
@@ -297,7 +302,8 @@ write_domain_state_interactive() {
         [[ -n "$base" ]] ||
             die "Base domain cannot be empty."
 
-        BASE_DOMAIN="$base"
+        valid_hostname "$base" ||
+            die "Invalid base domain: $base"
 
         read -r -p \
             "What application subdomain prefix should be used, e.g. home? [home]: " \
@@ -305,11 +311,15 @@ write_domain_state_interactive() {
 
         APP_SUBDOMAIN="${prefix:-home}"
 
+        valid_domain_prefix "$APP_SUBDOMAIN" ||
+            die "Invalid application subdomain prefix: $APP_SUBDOMAIN"
+
         read -r -p \
             "What email should Let's Encrypt use for certificate notices? Press Enter to skip: " \
             email
 
         ACME_EMAIL="$email"
+        BASE_DOMAIN="$base"
 
         save_domain_state
         load_domain_state
@@ -385,7 +395,7 @@ show_plan() {
                 printf '  - %s (%s -> port %s)\n' \
                     "$APP_NAME" \
                     "$APP_DOMAIN" \
-                    "$APP_PORT"
+                    "${APP_PORT:-not set}"
             fi
         done
     else
@@ -566,21 +576,11 @@ settings_selection_menu() {
     read -r -p "Choose one option [1-7]: " choice
 
     case "$choice" in
-        1)
-            DOMAIN_RECONFIGURE=true
-            ;;
-        2)
-            PROXMOX_RECONFIGURE=true
-            ;;
-        3)
-            NETWORK_RECONFIGURE=true
-            ;;
-        4)
-            APP_RECONFIGURE=true
-            ;;
-        5)
-            GODADDY_RECONFIGURE=true
-            ;;
+        1) DOMAIN_RECONFIGURE=true ;;
+        2) PROXMOX_RECONFIGURE=true ;;
+        3) NETWORK_RECONFIGURE=true ;;
+        4) APP_RECONFIGURE=true ;;
+        5) GODADDY_RECONFIGURE=true ;;
         6)
             DOMAIN_RECONFIGURE=true
             PROXMOX_RECONFIGURE=true
@@ -588,12 +588,8 @@ settings_selection_menu() {
             APP_RECONFIGURE=true
             GODADDY_RECONFIGURE=true
             ;;
-        7)
-            return 1
-            ;;
-        *)
-            die "Invalid settings selection: $choice"
-            ;;
+        7) return 1 ;;
+        *) die "Invalid settings selection: $choice" ;;
     esac
 
     return 0
@@ -622,10 +618,317 @@ modify_godaddy_pat() {
     fi
 
     save_godaddy_credentials "$pat"
-
     unset pat
 
     echo "GoDaddy PAT saved. The value remains hidden."
+}
+
+create_custom_app() {
+    local name id url ref archive deploy compose service port root
+    local domain aliases canonical tls host_port container health
+    local appdir
+
+    echo
+    echo "========================================"
+    echo " Create a custom application"
+    echo "========================================"
+    echo
+
+    read -r -p "Application name: " name
+    [[ -n "$name" ]] || die "Application name cannot be empty."
+
+    read -r -p "Application ID (lowercase letters, numbers, hyphens): " id
+    [[ "$id" =~ ^[a-z0-9][a-z0-9-]{1,47}$ ]] ||
+        die "Invalid application ID."
+
+    appdir="$(app_dir "$id")"
+    [[ ! -e "$appdir" ]] ||
+        die "An application with ID '$id' already exists."
+
+    read -r -p "Forgejo repository URL: " url
+    [[ "$url" =~ ^https?://[^[:space:]]+$ ]] ||
+        die "Enter a valid HTTP(S) repository URL."
+    url="${url%/}"
+
+    read -r -p "Repository branch, tag, or ref [main]: " ref
+    ref="${ref:-main}"
+    [[ "$ref" != *".."* ]] || die "Invalid repository ref."
+
+    archive="${url}/archive/${ref}.tar.gz"
+
+    echo "Checking repository archive access with curl..."
+    if ! curl -fLsS --connect-timeout 15 --max-time 45 "$archive" -o /dev/null; then
+        echo "The repository archive is not accessible:"
+        echo "$archive"
+        echo "Check the repository URL and ref, then try again."
+        echo "Repositories requiring an authentication token are not supported."
+        return 1
+    fi
+
+    echo
+    echo "Deployment type:"
+    echo "  1) Static site"
+    echo "  2) Compose"
+    echo "  3) Dockerfile"
+    read -r -p "Choose deployment type [2]: " deploy
+    deploy="${deploy:-2}"
+
+    case "$deploy" in
+        1)
+            deploy="static"
+            compose=""
+            service=""
+            read -r -p "Static output directory inside the repository [./]: " root
+            root="${root:-.}"
+            read -r -p "Local host port [8080]: " port
+            port="${port:-8080}"
+            ;;
+        2)
+            deploy="compose"
+            read -r -p "Compose file path inside the repository [compose.yml]: " compose
+            compose="${compose:-compose.yml}"
+            read -r -p "Compose service name: " service
+            read -r -p "Container web port [8080]: " port
+            port="${port:-8080}"
+            root=""
+            ;;
+        3)
+            deploy="dockerfile"
+            compose=""
+            service=""
+            read -r -p "Build context directory inside the repository [.]: " root
+            root="${root:-.}"
+            read -r -p "Container port [8080]: " port
+            port="${port:-8080}"
+            ;;
+        *)
+            die "Invalid deployment type."
+            ;;
+    esac
+
+    valid_port "$port" || die "Invalid application port."
+
+    read -r -p "Primary domain: " domain
+    valid_hostname "$domain" || die "Invalid application domain."
+
+    read -r -p "Additional domain aliases, space-separated (optional): " aliases
+    read -r -p "Canonical domain [$domain]: " canonical
+    canonical="${canonical:-$domain}"
+    valid_hostname "$canonical" || die "Invalid canonical domain."
+
+    echo
+    echo "TLS mode:"
+    echo "  1) Public ACME certificate"
+    echo "  2) Local CA certificate"
+    echo "  3) No certificate"
+    read -r -p "Choose TLS mode [2]: " tls
+    tls="${tls:-2}"
+
+    case "$tls" in
+        1) tls="acme" ;;
+        2) tls="local-ca" ;;
+        3) tls="none" ;;
+        *) die "Invalid TLS mode." ;;
+    esac
+
+    read -r -p "Local host port [$port]: " host_port
+    host_port="${host_port:-$port}"
+    valid_port "$host_port" || die "Invalid host port."
+
+    read -r -p "Container name [$id]: " container
+    container="${container:-$id}"
+
+    read -r -p "Health-check URL (optional): " health
+
+    install -d -m 0750 "$appdir"
+
+    cat > "${appdir}/app.conf" <<EOF_APP
+APP_ID=$(printf '%q' "$id")
+APP_NAME=$(printf '%q' "$name")
+APP_TYPE="custom"
+APP_SOURCE_TYPE="forgejo"
+APP_SOURCE_URL=$(printf '%q' "$url")
+APP_SOURCE_REF=$(printf '%q' "$ref")
+APP_DEPLOY_TYPE=$(printf '%q' "$deploy")
+APP_SOURCE_COMPOSE=$(printf '%q' "$compose")
+APP_SOURCE_SERVICE=$(printf '%q' "$service")
+APP_SOURCE_CONTAINER_PORT=$(printf '%q' "$port")
+APP_SOURCE_ROOT=$(printf '%q' "$root")
+APP_DOMAIN=$(printf '%q' "$domain")
+APP_DOMAIN_ALIASES=$(printf '%q' "$aliases")
+APP_CANONICAL_DOMAIN=$(printf '%q' "$canonical")
+APP_TLS_MODE=$(printf '%q' "$tls")
+APP_PORT=$(printf '%q' "$host_port")
+APP_CONTAINER=$(printf '%q' "$container")
+APP_TLS_NAME=$(printf '%q' "$id")
+APP_NGINX_ENABLED="true"
+APP_CERTIFICATE_ENABLED=$( [[ "$tls" == "none" ]] && printf '"false"' || printf '"true"' )
+APP_HEALTHCHECK_URL=$(printf '%q' "$health")
+EOF_APP
+
+    cat > "${appdir}/install.sh" <<'EOF_INSTALL'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/00-common.sh"
+app_id="$(basename "$(dirname "${BASH_SOURCE[0]}")")"
+source "$(app_dir "$app_id")/app.conf"
+runtime="$(app_runtime_dir "$app_id")"
+source_root="/opt/fedora-server-sources/${app_id}"
+install -d -m 0750 "$runtime" "$source_root"
+archive="${APP_SOURCE_URL%/}/archive/${APP_SOURCE_REF}.tar.gz"
+curl -fLsS --retry 2 --connect-timeout 15 "$archive" -o "${source_root}/source.tar.gz"
+tar -tzf "${source_root}/source.tar.gz" >/dev/null
+install -d -m 0750 "${source_root}/unpacked"
+find "${source_root}/unpacked" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+tar -xzf "${source_root}/source.tar.gz" -C "${source_root}/unpacked" --strip-components=1
+case "$APP_DEPLOY_TYPE" in
+    static)
+        root="${source_root}/unpacked/${APP_SOURCE_ROOT}"
+        [[ -d "$root" ]] || root="${source_root}/unpacked"
+        install -d -m 0755 "${runtime}/www"
+        find "${runtime}/www" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+        cp -a "$root"/. "${runtime}/www"/
+        ;;
+    compose)
+        compose="${source_root}/unpacked/${APP_SOURCE_COMPOSE}"
+        [[ -f "$compose" ]] || { printf 'Compose file not found: %s\n' "$compose" >&2; exit 1; }
+        cp "$compose" "${runtime}/source-compose.yml"
+        printf '%s\n' "$APP_SOURCE_SERVICE" > "${runtime}/source-service"
+        printf '%s\n' "$APP_SOURCE_CONTAINER_PORT" > "${runtime}/container-port"
+        printf '%s\n' "$APP_DOMAIN" > "${runtime}/domain"
+        printf '%s\n' "$APP_PORT" > "${runtime}/host-port"
+        printf '%s\n' "$APP_CONTAINER" > "${runtime}/container-name"
+        cp "${runtime}/source-compose.yml" "${runtime}/compose.yml"
+        docker compose -f "${runtime}/compose.yml" config >/dev/null
+        docker compose -f "${runtime}/compose.yml" up -d
+        ;;
+    dockerfile)
+        root="${source_root}/unpacked/${APP_SOURCE_ROOT}"
+        [[ -d "$root" ]] || root="${source_root}/unpacked"
+        if [[ ! -f "${root}/Dockerfile" ]]; then
+            printf 'No Dockerfile found in %s.\n' "$root" >&2
+            printf 'Create it manually using mkdir -p and cat > Dockerfile <<'\''EOF'\''.\n' >&2
+            printf 'The wizard does not create or modify Dockerfiles.\n' >&2
+            exit 2
+        fi
+        docker build -t "${APP_ID}:local" "$root"
+        docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
+        docker run -d --restart unless-stopped --name "$APP_CONTAINER" -p "127.0.0.1:${APP_PORT}:${APP_SOURCE_CONTAINER_PORT}" "${APP_ID}:local"
+        ;;
+    *)
+        printf 'Unsupported deployment type: %s\n' "$APP_DEPLOY_TYPE" >&2
+        exit 1
+        ;;
+esac
+touch "${runtime}/.installed"
+chmod 600 "${runtime}/.installed"
+EOF_INSTALL
+    chmod 750 "${appdir}/install.sh"
+
+    cat > "${appdir}/verify.sh" <<'EOF_VERIFY'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/00-common.sh"
+app_id="$(basename "$(dirname "${BASH_SOURCE[0]}")")"
+source "$(app_dir "$app_id")/app.conf"
+if [[ -n "${APP_HEALTHCHECK_URL:-}" ]]; then
+    curl -fsS --max-time 10 "$APP_HEALTHCHECK_URL" >/dev/null
+fi
+EOF_VERIFY
+    chmod 750 "${appdir}/verify.sh"
+
+    cat > "${appdir}/remove.sh" <<'EOF_REMOVE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/00-common.sh"
+app_id="$(basename "$(dirname "${BASH_SOURCE[0]}")")"
+source "$(app_dir "$app_id")/app.conf"
+runtime="$(app_runtime_dir "$app_id")"
+if [[ "${APP_DEPLOY_TYPE:-}" == "compose" && -f "${runtime}/compose.yml" ]]; then
+    docker compose -f "${runtime}/compose.yml" down --remove-orphans
+elif [[ -n "${APP_CONTAINER:-}" ]]; then
+    docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
+fi
+rm -f "${NGINX_RUNTIME_DIR}/${app_id}.conf"
+EOF_REMOVE
+    chmod 750 "${appdir}/remove.sh"
+
+    echo
+    echo "Created application definition: apps/${id}"
+    echo "No Dockerfile was created or modified."
+}
+
+update_one_source() {
+    local app_id="$1"
+    local url ref archive destination
+
+    load_app_config "$app_id" || {
+        warn "Application is disabled: $app_id"
+        return 1
+    }
+
+    url="${APP_SOURCE_URL:-}"
+    ref="${APP_SOURCE_REF:-}"
+
+    if [[ -z "$url" || -z "$ref" ]]; then
+        warn "$app_id is not configured for source-only updates."
+        return 1
+    fi
+
+    archive="${url%/}/archive/${ref}.tar.gz"
+    destination="${RUNTIME_SOURCE_DIR}/${app_id}"
+
+    install -d -m 0750 "$destination"
+
+    if ! curl -fLsS --retry 2 --connect-timeout 15 --max-time 60 \
+        "$archive" -o "${destination}/source-update.tar.gz"; then
+        warn "Could not download the source archive for $app_id."
+        return 1
+    fi
+
+    if ! tar -tzf "${destination}/source-update.tar.gz" >/dev/null; then
+        warn "The downloaded archive for $app_id is invalid."
+        rm -f "${destination}/source-update.tar.gz"
+        return 1
+    fi
+
+    log "Source archive staged for $app_id at ${destination}/source-update.tar.gz"
+    log "The running application was not deployed, restarted, or changed."
+}
+
+update_source_only() {
+    local choice app_id
+    local selected=()
+
+    echo
+    echo "========================================"
+    echo " Update application source only"
+    echo "========================================"
+    echo
+    echo "This downloads source archives only. It does not deploy or restart applications."
+    show_apps
+
+    read -r -p "Application ID, All, or Cancel: " choice
+
+    case "$choice" in
+        Cancel|cancel|CANCEL|"")
+            echo "Source update cancelled."
+            return
+            ;;
+        All|all|ALL)
+            while IFS= read -r app_id; do
+                [[ -n "$app_id" ]] && selected+=("$app_id")
+            done < <(app_ids)
+            ;;
+        *)
+            validate_app_id "$choice"
+            selected+=("$choice")
+            ;;
+    esac
+
+    for app_id in "${selected[@]}"; do
+        update_one_source "$app_id" || true
+    done
 }
 
 install_application() {
@@ -653,8 +956,16 @@ install_application() {
     echo "========================================"
     echo
 
+    echo "  C) Create a custom application"
+    echo
+
     if ((${#available[@]} == 0)); then
         echo "All available applications are already installed."
+        read -r -p "Create a custom application now? [y/N]: " answer
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+            create_custom_app || return
+            return
+        fi
         return
     fi
 
@@ -670,15 +981,21 @@ install_application() {
             "$((item + 1))" \
             "$APP_NAME" \
             "$APP_ID" \
-            "$APP_PORT"
+            "${APP_PORT:-not set}"
     done
 
     echo
     echo "Enter one or more numbers separated by spaces."
+    echo "Enter C to create a custom application."
     echo "Example: 1 3"
     echo
 
     read -r -p "Choose applications to install: " choice
+
+    if [[ "$choice" =~ ^[Cc]$ ]]; then
+        create_custom_app || return
+        return
+    fi
 
     [[ -n "$choice" ]] ||
         die "No application was selected."
@@ -709,7 +1026,7 @@ install_application() {
         printf '  - %s (%s -> port %s)\n' \
             "$APP_NAME" \
             "$APP_DOMAIN" \
-            "$APP_PORT"
+            "${APP_PORT:-not set}"
     done
 
     echo
@@ -835,7 +1152,9 @@ remove_application() {
         return
     fi
 
-    if [[ -f "$compose" ]]; then
+    if [[ -x "$(app_dir "$app_id")/remove.sh" ]]; then
+        bash "$(app_dir "$app_id")/remove.sh"
+    elif [[ -f "$compose" ]]; then
         (
             cd "$runtime"
 
@@ -931,7 +1250,9 @@ remove_server_package() {
         runtime="$(app_runtime_dir "$app_id")"
         compose="$(app_compose_file "$app_id")"
 
-        if [[ -f "$compose" ]]; then
+        if [[ -x "$(app_dir "$app_id")/remove.sh" ]]; then
+            bash "$(app_dir "$app_id")/remove.sh" || true
+        elif [[ -f "$compose" ]]; then
             (
                 cd "$runtime"
 
@@ -961,9 +1282,7 @@ remove_server_package() {
 
     if [[ -f "${STATE_DIR}/managed-nginx-apps" ]]; then
         while IFS= read -r app_id; do
-            [[ -n "$app_id" ]] ||
-                continue
-
+            [[ -n "$app_id" ]] || continue
             rm -f "${NGINX_RUNTIME_DIR}/${app_id}.conf"
         done < "${STATE_DIR}/managed-nginx-apps"
     fi
@@ -986,10 +1305,8 @@ remove_server_package() {
         certbot="${STACK_DIR}/certbot-venv/bin/certbot"
     fi
 
-    if [[ -z "$certbot" ]]; then
-        if command -v certbot >/dev/null 2>&1; then
-            certbot="$(command -v certbot)"
-        fi
+    if [[ -z "$certbot" ]] && command -v certbot >/dev/null 2>&1; then
+        certbot="$(command -v certbot)"
     fi
 
     if [[ -n "$certbot" ]]; then
@@ -1063,35 +1380,25 @@ interactive_menu() {
     echo "  1) Update the existing installation"
     echo "  2) Modify saved settings and application selection"
     echo "  3) Install an application"
-    echo "  4) Remove one application"
-    echo "  5) Remove the complete managed server package"
-    echo "  6) Exit without changes"
+    echo "  4) Create a custom application"
+    echo "  5) Update application source only"
+    echo "  6) Remove one application"
+    echo "  7) Remove the complete managed server package"
+    echo "  8) Exit without changes"
     echo
 
-    read -r -p "Choose one action [1-6]: " action
+    read -r -p "Choose one action [1-8]: " action
 
     case "$action" in
-        1)
-            update_installed
-            ;;
-        2)
-            modify_settings
-            ;;
-        3)
-            install_application
-            ;;
-        4)
-            remove_application
-            ;;
-        5)
-            remove_server_package
-            ;;
-        6)
-            echo "No changes made."
-            ;;
-        *)
-            die "Invalid menu selection: $action"
-            ;;
+        1) update_installed ;;
+        2) modify_settings ;;
+        3) install_application ;;
+        4) create_custom_app ;;
+        5) update_source_only ;;
+        6) remove_application ;;
+        7) remove_server_package ;;
+        8) echo "No changes made." ;;
+        *) die "Invalid menu selection: $action" ;;
     esac
 }
 
@@ -1124,6 +1431,9 @@ main() {
             --list)
                 mode="list"
                 ;;
+            --update-source)
+                mode="update-source"
+                ;;
             --help|-h)
                 usage
                 exit 0
@@ -1142,6 +1452,11 @@ main() {
     if [[ "$mode" == "list" ]]; then
         show_detection
         show_apps
+        exit 0
+    fi
+
+    if [[ "$mode" == "update-source" ]]; then
+        update_source_only
         exit 0
     fi
 

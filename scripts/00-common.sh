@@ -285,11 +285,23 @@ load_app_config() {
     unset \
         APP_ID \
         APP_NAME \
+        APP_TYPE \
+        APP_SOURCE_TYPE \
+        APP_SOURCE_URL \
+        APP_SOURCE_REF \
+        APP_DEPLOY_TYPE \
+        APP_SOURCE_COMPOSE \
+        APP_SOURCE_SERVICE \
+        APP_SOURCE_CONTAINER_PORT \
+        APP_SOURCE_ROOT \
         APP_DOMAIN \
+        APP_CANONICAL_DOMAIN \
+        APP_DOMAIN_ALIASES \
         APP_PORT \
         APP_EXTRA_PORTS \
         APP_CONTAINER \
         APP_TLS_NAME \
+        APP_TLS_MODE \
         APP_NGINX_ENABLED \
         APP_CERTIFICATE_ENABLED \
         APP_HEALTHCHECK_URL
@@ -336,9 +348,18 @@ app_name() {
 
 app_is_installed() {
     local app_id="$1"
-    local runtime="$(app_runtime_dir "$app_id")"
+    local runtime
 
-    [[ -f "${runtime}/.installed" ]]
+    runtime="$(app_runtime_dir "$app_id")"
+
+    [[ -f "${runtime}/.installed" ]] || return 1
+
+    load_app_config "$app_id" || return 1
+
+    if [[ "${APP_TYPE:-}" == "custom" ]]; then
+        return 0
+    fi
+
     [[ -f "$(app_compose_file "$app_id")" ]]
 }
 
@@ -359,6 +380,10 @@ app_prepare_runtime() {
     local source_dir
     local runtime
 
+    load_app_config "$app_id"
+
+    [[ "${APP_TYPE:-}" == "custom" ]] && return 0
+
     source_dir="$(app_dir "$app_id")"
     runtime="$(app_runtime_dir "$app_id")"
 
@@ -372,27 +397,42 @@ app_prepare_runtime() {
 }
 
 app_config_signature() {
-    printf '%s|%s|%s|%s|%s' \
+    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
         "${APP_DOMAIN}" \
         "${APP_PORT}" \
         "${APP_EXTRA_PORTS:-}" \
         "${APP_NGINX_ENABLED:-true}" \
-        "${APP_CERTIFICATE_ENABLED:-true}"
+        "${APP_CERTIFICATE_ENABLED:-true}" \
+        "${APP_TYPE:-}" \
+        "${APP_DEPLOY_TYPE:-}" \
+        "${APP_TLS_MODE:-}" \
+        "${APP_CANONICAL_DOMAIN:-}" \
+        "${APP_DOMAIN_ALIASES:-}"
 }
 
 app_is_current() {
     local app_id="$1"
     local runtime
     local source_dir
+    local source_hash
 
     runtime="$(app_runtime_dir "$app_id")"
     source_dir="$(app_dir "$app_id")"
 
-    [[ -f "${runtime}/.config" ]]
-    [[ -f "${runtime}/.compose.sha256" ]]
+    [[ -f "${runtime}/.config" ]] || return 1
+    [[ "$(cat "${runtime}/.config")" == "$(app_config_signature)" ]] || return 1
 
-    [[ "$(cat "${runtime}/.config")" == "$(app_config_signature)" ]]
+    load_app_config "$app_id"
 
+    if [[ "${APP_TYPE:-}" == "custom" ]]; then
+        [[ -d "${runtime}/source" ]] || return 1
+        source_hash="$(find "${runtime}/source" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
+        [[ -f "${runtime}/.source.sha256" ]] || return 1
+        [[ "$(cat "${runtime}/.source.sha256")" == "$source_hash" ]]
+        return
+    fi
+
+    [[ -f "${runtime}/.compose.sha256" ]] || return 1
     [[ "$(cat "${runtime}/.compose.sha256")" == "$(sha256sum "${source_dir}/compose.yml" | awk '{print $1}')" ]]
 }
 
@@ -400,18 +440,28 @@ app_write_state() {
     local app_id="$1"
     local runtime
     local source_dir
+    local source_hash
 
     runtime="$(app_runtime_dir "$app_id")"
     source_dir="$(app_dir "$app_id")"
 
     printf '%s' "$(app_config_signature)" > "${runtime}/.config"
 
-    sha256sum "${source_dir}/compose.yml" |
-        awk '{print $1}' > "${runtime}/.compose.sha256"
+    load_app_config "$app_id"
 
-    chmod 600 \
-        "${runtime}/.config" \
-        "${runtime}/.compose.sha256"
+    if [[ "${APP_TYPE:-}" == "custom" ]]; then
+        source_hash="$(find "${runtime}/source" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
+        printf '%s' "$source_hash" > "${runtime}/.source.sha256"
+        rm -f "${runtime}/.compose.sha256"
+        chmod 600 "${runtime}/.config" "${runtime}/.source.sha256"
+    else
+        sha256sum "${source_dir}/compose.yml" |
+            awk '{print $1}' > "${runtime}/.compose.sha256"
+
+        chmod 600 \
+            "${runtime}/.config" \
+            "${runtime}/.compose.sha256"
+    fi
 
     touch "${runtime}/.installed"
     chmod 600 "${runtime}/.installed"
@@ -514,6 +564,23 @@ app_certificate_path() {
 
     load_app_config "$app_id" || return 1
 
+    if [[ "${APP_TYPE:-}" == "custom" ]]; then
+        case "${APP_TLS_MODE:-local-ca}" in
+            acme)
+                printf '/etc/letsencrypt/live/%s/fullchain.pem' "$APP_TLS_NAME"
+                ;;
+            local-ca)
+                printf '%s/%s.crt' "$TLS_DIR" "$APP_TLS_NAME"
+                ;;
+            none)
+                return 0
+                ;;
+            *)
+                die "Unsupported application TLS mode: ${APP_TLS_MODE}"
+                ;;
+        esac
+    fi
+
     if [[ "$DOMAIN_MODE" == "public" ]]; then
         public_certificate_path
     else
@@ -525,6 +592,23 @@ app_certificate_key_path() {
     local app_id="$1"
 
     load_app_config "$app_id" || return 1
+
+    if [[ "${APP_TYPE:-}" == "custom" ]]; then
+        case "${APP_TLS_MODE:-local-ca}" in
+            acme)
+                printf '/etc/letsencrypt/live/%s/privkey.pem' "$APP_TLS_NAME"
+                ;;
+            local-ca)
+                printf '%s/%s.key' "$TLS_DIR" "$APP_TLS_NAME"
+                ;;
+            none)
+                return 0
+                ;;
+            *)
+                die "Unsupported application TLS mode: ${APP_TLS_MODE}"
+                ;;
+        esac
+    fi
 
     if [[ "$DOMAIN_MODE" == "public" ]]; then
         public_certificate_key_path
@@ -559,8 +643,8 @@ app_nginx_install() {
     local app_id="$1"
     local source_conf
     local runtime_conf
-    local cert
-    local key
+    local cert=""
+    local key=""
 
     source_conf="$(app_dir "$app_id")/nginx.conf"
     runtime_conf="${NGINX_RUNTIME_DIR}/${app_id}.conf"
@@ -568,17 +652,21 @@ app_nginx_install() {
     [[ -f "$source_conf" ]] || return 0
     [[ "${APP_NGINX_ENABLED:-true}" == "true" ]] || return 0
 
-    cert="$(app_certificate_path "$app_id")"
-    key="$(app_certificate_key_path "$app_id")"
+    if [[ "${APP_CERTIFICATE_ENABLED:-true}" == "true" ]]; then
+        cert="$(app_certificate_path "$app_id")"
+        key="$(app_certificate_key_path "$app_id")"
+    fi
 
     install -d -m 0755 "$NGINX_RUNTIME_DIR"
 
     sed \
         -e "s|__APP_DOMAIN__|${APP_DOMAIN}|g" \
+        -e "s|__APP_CANONICAL_DOMAIN__|${APP_CANONICAL_DOMAIN:-$APP_DOMAIN}|g" \
         -e "s|__APP_PORT__|${APP_PORT}|g" \
         -e "s|__APP_TLS_NAME__|${APP_TLS_NAME}|g" \
         -e "s|__APP_CERTIFICATE__|${cert}|g" \
         -e "s|__APP_CERTIFICATE_KEY__|${key}|g" \
+        -e "s|__APP_SOURCE_ROOT__|${APP_RUNTIME_SOURCE_ROOT:-$(app_runtime_dir "$app_id")/public}|g" \
         "$source_conf" > "$runtime_conf"
 }
 
@@ -592,15 +680,20 @@ app_certificate_needed() {
 
 app_cert_install() {
     local app_id="$1"
+
+    load_app_config "$app_id" || return 1
+
+    if [[ "${APP_CERTIFICATE_ENABLED:-true}" != "true" ]]; then
+        return 0
+    fi
+
     local cert
     local key
 
     cert="$(app_certificate_path "$app_id")"
     key="$(app_certificate_key_path "$app_id")"
 
-    [[ -s "$cert" && -s "$key" ]] || return 1
-
-    return 0
+    [[ -s "$cert" && -s "$key" ]]
 }
 
 sleep_after_disconnect_warning() {
