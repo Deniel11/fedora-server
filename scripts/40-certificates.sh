@@ -60,13 +60,39 @@ local_generate_ca() {
 }
 
 local_generate_leaf() {
-    local name="$1" domain="$2" ip="$3"
-    local key="${TLS_DIR}/${name}.key" cert="${TLS_DIR}/${name}.crt"
-    local csr="${TLS_DIR}/${name}.csr" ext="${TLS_DIR}/${name}.ext"
-    printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:%s,IP:%s\n' "$domain" "$ip" > "$ext"
+    local name="$1"
+    local domain="$2"
+    local ip="$3"
+    local aliases="${4:-}"
+    local key="${TLS_DIR}/${name}.key"
+    local cert="${TLS_DIR}/${name}.crt"
+    local csr="${TLS_DIR}/${name}.csr"
+    local ext="${TLS_DIR}/${name}.ext"
+    local san="DNS:${domain},IP:${ip}"
+    local alias
+
+    for alias in $aliases; do
+        valid_hostname "$alias" || die "Invalid certificate alias: $alias"
+        san+=",DNS:${alias}"
+    done
+
+    printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=%s\n' \
+        "$san" > "$ext"
+
     openssl genrsa -out "$key" 2048
-    openssl req -new -key "$key" -out "$csr" -subj "/C=XX/O=Home Lab/CN=${domain}"
-    openssl x509 -req -in "$csr" -CA "${TLS_DIR}/ca.crt" -CAkey "${TLS_DIR}/ca.key" -CAcreateserial -out "$cert" -days 365 -sha256 -extfile "$ext"
+    openssl req -new -key "$key" -out "$csr" \
+        -subj "/C=XX/O=Home Lab/CN=${domain}"
+
+    openssl x509 -req \
+        -in "$csr" \
+        -CA "${TLS_DIR}/ca.crt" \
+        -CAkey "${TLS_DIR}/ca.key" \
+        -CAcreateserial \
+        -out "$cert" \
+        -days 365 \
+        -sha256 \
+        -extfile "$ext"
+
     chmod 600 "$key"
     chmod 644 "$cert"
     rm -f "$csr" "$ext" "${TLS_DIR}/ca.srl"
@@ -138,7 +164,11 @@ while IFS= read -r app_id; do
             cert="${TLS_DIR}/${APP_TLS_NAME:-$app_id}.crt"
             if certificate_needs_regeneration "$cert" "$APP_DOMAIN" "$STATIC_IP"; then
                 rm -f "${TLS_DIR}/${APP_TLS_NAME:-$app_id}.key" "$cert"
-                local_generate_leaf "${APP_TLS_NAME:-$app_id}" "$APP_DOMAIN" "$STATIC_IP"
+                local_generate_leaf \
+                    "${APP_TLS_NAME:-$app_id}" \
+                    "${APP_CANONICAL_DOMAIN:-$APP_DOMAIN}" \
+                    "$STATIC_IP" \
+                    "${APP_DOMAIN_ALIASES:-}"
             fi
             ;;
         acme) ;;
@@ -146,56 +176,199 @@ while IFS= read -r app_id; do
     esac
 done < <(certificate_apps)
 
+
+# Generate local infrastructure certificates when local mode is active.
 if [[ "$DOMAIN_MODE" == local ]]; then
-    for entry in "fedora-server:${FEDORA_DOMAIN}:${STATIC_IP}" "proxmox:${PROXMOX_DOMAIN}:${PROXMOX_IP}"; do
+    for entry in \
+        "fedora-server:${FEDORA_DOMAIN}:${STATIC_IP}" \
+        "proxmox:${PROXMOX_DOMAIN}:${PROXMOX_IP}"; do
+
         IFS=: read -r name domain ip <<< "$entry"
         cert="${TLS_DIR}/${name}.crt"
+
         if certificate_needs_regeneration "$cert" "$domain" "$ip"; then
             rm -f "${TLS_DIR}/${name}.key" "$cert"
             local_generate_leaf "$name" "$domain" "$ip"
         fi
     done
+
     chmod 700 "$TLS_DIR"
     find "$TLS_DIR" -maxdepth 1 -type f -name '*.key' -exec chmod 600 {} +
     find "$TLS_DIR" -maxdepth 1 -type f -name '*.crt' -exec chmod 644 {} +
-    log "Local TLS material is ready in ${TLS_DIR}"
-    exit 0
 fi
 
-dnf install -y python3 python3-pip curl
-CERTBOT_VENV="${STACK_DIR}/certbot-venv"
-[[ -x "${CERTBOT_VENV}/bin/certbot" ]] || python3 -m venv "$CERTBOT_VENV"
-"${CERTBOT_VENV}/bin/python" -m pip install --upgrade pip
-"${CERTBOT_VENV}/bin/pip" install --upgrade certbot
-CERTBOT="${CERTBOT_VENV}/bin/certbot"
-godaddy_credentials_valid || die "GoDaddy PAT is missing. Configure public mode again and provide a valid PAT."
-install -m 0750 "${REPO_ROOT}/scripts/godaddy-dns-hook.sh" "${STACK_DIR}/godaddy-dns-hook.sh"
-chmod 700 "${STACK_DIR}/godaddy-dns-hook.sh"
+# Determine which ACME certificates are actually required.
+need_wildcard_cert=false
+custom_acme_apps=()
 
-zone="${APP_SUBDOMAIN%.}"
-zone="${zone#.}"
-if [[ -n "$zone" ]]; then zone="${zone}.${BASE_DOMAIN}"; else zone="$BASE_DOMAIN"; fi
-cert_name="$zone"
-cert_dir="/etc/letsencrypt/live/${cert_name}"
-need_public_cert=false
 while IFS= read -r app_id; do
     [[ -n "$app_id" ]] || continue
     load_tls_app_config "$app_id" || continue
     [[ "${APP_CERTIFICATE_ENABLED:-true}" == true ]] || continue
-    tls_mode="${APP_TLS_MODE:-acme}"
+
+    tls_mode="${APP_TLS_MODE:-}"
+    if [[ -z "$tls_mode" ]]; then
+        if [[ "$DOMAIN_MODE" == public ]]; then
+            tls_mode="acme"
+        else
+            tls_mode="local-ca"
+        fi
+    fi
+
     [[ "$tls_mode" == acme ]] || continue
-    need_public_cert=true
+
+    if [[ "${APP_TYPE:-}" == "custom" ]]; then
+        custom_acme_apps+=("$app_id")
+    elif [[ "$DOMAIN_MODE" == public ]]; then
+        need_wildcard_cert=true
+    fi
 done < <(certificate_apps)
 
-if [[ "$need_public_cert" == true ]]; then
-    if [[ -s "${cert_dir}/fullchain.pem" && -s "${cert_dir}/privkey.pem" ]] && openssl x509 -checkend 86400 -noout -in "${cert_dir}/fullchain.pem" >/dev/null 2>&1; then
-        log "Wildcard certificate ${cert_name} already exists; renewal is handled by the systemd timer."
+if [[ "$need_wildcard_cert" != true &&
+      "${#custom_acme_apps[@]}" -eq 0 ]]; then
+    log "No ACME certificates are required."
+    log "Local TLS material is ready in ${TLS_DIR}"
+    exit 0
+fi
+
+# ACME is required: prepare Certbot and validate the GoDaddy configuration.
+dnf install -y python3 python3-pip curl
+
+CERTBOT_VENV="${STACK_DIR}/certbot-venv"
+if [[ ! -x "${CERTBOT_VENV}/bin/certbot" ]]; then
+    python3 -m venv "$CERTBOT_VENV"
+    "${CERTBOT_VENV}/bin/python" -m pip install --upgrade pip
+    "${CERTBOT_VENV}/bin/pip" install certbot
+fi
+
+CERTBOT="${CERTBOT_VENV}/bin/certbot"
+
+godaddy_credentials_valid ||
+    die "GoDaddy PAT is missing. Configure public DNS-01 credentials first."
+
+[[ -s "${STATE_DIR}/godaddy-zones.conf" ]] ||
+    die "GoDaddy DNS zone configuration is missing: ${STATE_DIR}/godaddy-zones.conf. Run the installer domain configuration again."
+
+install -m 0750 \
+    "${REPO_ROOT}/scripts/godaddy-dns-hook.sh" \
+    "${STACK_DIR}/godaddy-dns-hook.sh"
+chmod 700 "${STACK_DIR}/godaddy-dns-hook.sh"
+
+email_args=()
+if [[ -n "${ACME_EMAIL:-}" ]]; then
+    email_args=(--email "$ACME_EMAIL")
+fi
+
+# Issue the wildcard certificate used by built-in applications in public mode.
+if [[ "$need_wildcard_cert" == true ]]; then
+    zone="${APP_SUBDOMAIN%.}"
+    zone="${zone#.}"
+
+    if [[ -n "$zone" ]]; then
+        zone="${zone}.${BASE_DOMAIN}"
     else
-        log "Requesting public ACME certificate for ${zone} and *.${zone}"
-        email_args=()
-        [[ -n "${ACME_EMAIL:-}" ]] && email_args=(--email "$ACME_EMAIL")
-        "$CERTBOT" certonly --manual --preferred-challenges dns --manual-auth-hook "${STACK_DIR}/godaddy-dns-hook.sh auth" --manual-cleanup-hook "${STACK_DIR}/godaddy-dns-hook.sh cleanup" --non-interactive --agree-tos "${email_args[@]}" --keep-until-expiring --cert-name "$cert_name" -d "$zone" -d "*.${zone}"
+        zone="$BASE_DOMAIN"
+    fi
+
+    cert_name="$zone"
+    cert_dir="/etc/letsencrypt/live/${cert_name}"
+
+    if [[ -s "${cert_dir}/fullchain.pem" &&
+          -s "${cert_dir}/privkey.pem" ]] &&
+       openssl x509 -checkend 86400 -noout \
+           -in "${cert_dir}/fullchain.pem" >/dev/null 2>&1; then
+        log "Wildcard certificate ${cert_name} exists and is not near expiry."
+    else
+        log "Requesting wildcard certificate for ${zone} and *.${zone}"
+
+        "$CERTBOT" certonly \
+            --manual \
+            --preferred-challenges dns \
+            --manual-auth-hook "${STACK_DIR}/godaddy-dns-hook.sh auth" \
+            --manual-cleanup-hook "${STACK_DIR}/godaddy-dns-hook.sh cleanup" \
+            --non-interactive \
+            --agree-tos \
+            "${email_args[@]}" \
+            --cert-name "$cert_name" \
+            -d "$zone" \
+            -d "*.${zone}"
     fi
 fi
 
-log "Public TLS material is ready under /etc/letsencrypt/live when required."
+# Issue separate certificates for custom apps that explicitly select ACME.
+for app_id in "${custom_acme_apps[@]}"; do
+    load_tls_app_config "$app_id" || continue
+
+    cert_name="${APP_TLS_NAME:-$app_id}"
+    canonical="${APP_CANONICAL_DOMAIN:-$APP_DOMAIN}"
+
+    domains=("$canonical")
+
+    if [[ "$APP_DOMAIN" != "$canonical" ]]; then
+        domains+=("$APP_DOMAIN")
+    fi
+
+    for alias in ${APP_DOMAIN_ALIASES:-}; do
+        valid_hostname "$alias" ||
+            die "Invalid certificate alias for ${app_id}: ${alias}"
+        domains+=("$alias")
+    done
+
+    # Remove duplicate names while preserving their original order.
+    unique_domains=()
+    declare -A seen_domains=()
+
+    for domain in "${domains[@]}"; do
+        [[ -n "${seen_domains[$domain]:-}" ]] && continue
+        seen_domains["$domain"]=1
+        unique_domains+=("$domain")
+    done
+
+    unset seen_domains
+
+    domain_args=()
+    for domain in "${unique_domains[@]}"; do
+        domain_args+=(-d "$domain")
+    done
+
+    cert_dir="/etc/letsencrypt/live/${cert_name}"
+
+    # Avoid requesting a new certificate on every installer run.
+    renew_custom_cert=true
+
+    if [[ -s "${cert_dir}/fullchain.pem" &&
+          -s "${cert_dir}/privkey.pem" ]] &&
+       openssl x509 -checkend $((30 * 86400)) -noout \
+           -in "${cert_dir}/fullchain.pem" >/dev/null 2>&1; then
+
+        renew_custom_cert=false
+
+        for domain in "${unique_domains[@]}"; do
+            if ! openssl x509 -in "${cert_dir}/fullchain.pem" \
+                -noout -ext subjectAltName |
+                grep -Fq "DNS:${domain}"; then
+                renew_custom_cert=true
+                break
+            fi
+        done
+    fi
+
+    if [[ "$renew_custom_cert" == true ]]; then
+        log "Requesting ACME certificate '${cert_name}' for ${unique_domains[*]}"
+
+        "$CERTBOT" certonly \
+            --manual \
+            --preferred-challenges dns \
+            --manual-auth-hook "${STACK_DIR}/godaddy-dns-hook.sh auth" \
+            --manual-cleanup-hook "${STACK_DIR}/godaddy-dns-hook.sh cleanup" \
+            --non-interactive \
+            --agree-tos \
+            "${email_args[@]}" \
+            --cert-name "$cert_name" \
+            "${domain_args[@]}"
+    else
+        log "Custom certificate '${cert_name}' is valid and contains the configured DNS names."
+    fi
+done
+
+log "Certificate processing completed."

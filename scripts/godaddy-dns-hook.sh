@@ -5,6 +5,7 @@ set -Eeuo pipefail
 STATE_DIR="/etc/fedora-server-setup"
 CREDENTIALS_FILE="${STATE_DIR}/godaddy.ini"
 DOMAIN_STATE="${STATE_DIR}/domain.env"
+ZONE_CONFIG="${STATE_DIR}/godaddy-zones.conf"
 
 API_BASE="https://api.godaddy.com/v3/domains/zones"
 DNS_TTL="${GODADDY_DNS_TTL:-600}"
@@ -36,6 +37,16 @@ BASE_DOMAIN="${BASE_DOMAIN:-}"
 
 [[ -n "$BASE_DOMAIN" ]] ||
     die "BASE_DOMAIN is empty; public mode is required."
+
+GODADDY_DNS_ZONES=()
+
+if [[ -r "$ZONE_CONFIG" ]]; then
+    source "$ZONE_CONFIG"
+fi
+
+if ((${#GODADDY_DNS_ZONES[@]} == 0)) && [[ -n "${BASE_DOMAIN:-}" ]]; then
+    GODADDY_DNS_ZONES=("$BASE_DOMAIN")
+fi
 
 [[ -n "${CERTBOT_DOMAIN:-}" ]] ||
     die "CERTBOT_DOMAIN is not set"
@@ -95,37 +106,62 @@ request() {
     rm -f "$response_file"
 }
 
+
+find_zone() {
+    local domain="${1%.}"
+    local candidate
+    local best=""
+
+    for candidate in "${GODADDY_DNS_ZONES[@]}"; do
+        candidate="${candidate%.}"
+        [[ -n "$candidate" ]] || continue
+
+        if [[ "$domain" == "$candidate" || "$domain" == *".${candidate}" ]]; then
+            if ((${#candidate} > ${#best})); then
+                best="$candidate"
+            fi
+        fi
+    done
+
+    [[ -n "$best" ]] ||
+        die "No configured GoDaddy DNS zone matches ${domain}. Add its registered zone to ${ZONE_CONFIG}."
+
+    printf '%s' "$best"
+}
+
 record_name() {
-    local domain="$1"
+    local domain="${1%.}"
+    local zone="${2%.}"
     local relative_name
 
-    if [[ "$domain" == "$BASE_DOMAIN" ]]; then
+    if [[ "$domain" == "$zone" ]]; then
         printf '_acme-challenge'
         return
     fi
 
-    [[ "$domain" == *".${BASE_DOMAIN}" ]] ||
-        die "Certificate domain $domain is outside BASE_DOMAIN=$BASE_DOMAIN"
+    [[ "$domain" == *".${zone}" ]] ||
+        die "Domain ${domain} is not inside DNS zone ${zone}."
 
-    relative_name="${domain%.${BASE_DOMAIN}}"
+    relative_name="${domain%."${zone}"}"
     relative_name="${relative_name%.}"
 
-    if [[ -n "$relative_name" ]]; then
-        printf '_acme-challenge.%s' "$relative_name"
-    else
-        printf '_acme-challenge'
-    fi
+    [[ -n "$relative_name" ]] ||
+        die "Could not derive the relative DNS name for ${domain}."
+
+    printf '_acme-challenge.%s' "$relative_name"
 }
 
 preflight() {
-    log "Checking GoDaddy API access for ${BASE_DOMAIN}"
+    local zone="$1"
+
+    log "Checking GoDaddy API access for ${zone}"
 
     request \
         GET \
-        "${API_BASE}/${BASE_DOMAIN}/dns-records?type=TXT&name=_acme-challenge&page=1&pageSize=1" \
+        "${API_BASE}/${zone}/dns-records?type=TXT&name=_acme-challenge&page=1&pageSize=1" \
         >/dev/null
 
-    log "GoDaddy API authentication and DNS read access are working."
+    log "GoDaddy API authentication and DNS read access are working for ${zone}."
 }
 
 find_record() {
@@ -192,10 +228,10 @@ delete_record() {
 
 case "${1:-}" in
     auth)
-        zone="$BASE_DOMAIN"
-        name="$(record_name "$CERTBOT_DOMAIN")"
+        zone="$(find_zone "$CERTBOT_DOMAIN")"
+        name="$(record_name "$CERTBOT_DOMAIN" "$zone")"
 
-        preflight
+        preflight "$zone"
 
         log "Creating GoDaddy TXT record ${name}.${zone}"
 
@@ -220,8 +256,8 @@ case "${1:-}" in
         ;;
 
     cleanup)
-        zone="$BASE_DOMAIN"
-        name="$(record_name "$CERTBOT_DOMAIN")"
+        zone="$(find_zone "$CERTBOT_DOMAIN")"
+        name="$(record_name "$CERTBOT_DOMAIN" "$zone")"
 
         existing="$(
             find_record \

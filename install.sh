@@ -275,6 +275,12 @@ write_domain_state_interactive() {
     if [[ -f "$DOMAIN_STATE" && "$DOMAIN_RECONFIGURE" != true ]]; then
         load_domain_state
         ensure_godaddy_credentials
+
+        if [[ "$DOMAIN_MODE" == "public" &&
+              ! -s "${STATE_DIR}/godaddy-zones.conf" ]]; then
+            configure_godaddy_zones_interactive
+        fi
+
         return
     fi
 
@@ -324,6 +330,7 @@ write_domain_state_interactive() {
         save_domain_state
         load_domain_state
         ensure_godaddy_credentials
+        configure_godaddy_zones_interactive
     else
         DOMAIN_MODE="local"
         BASE_DOMAIN=""
@@ -334,6 +341,65 @@ write_domain_state_interactive() {
         load_domain_state
     fi
 }
+
+
+configure_godaddy_zones_interactive() {
+    local input zone
+    local -a zones=()
+    local -A seen=()
+
+    [[ "${DOMAIN_MODE:-local}" == "public" ]] || return 0
+
+    install -d -m 0750 "$STATE_DIR"
+
+    echo
+    echo "========================================"
+    echo " GoDaddy DNS zones"
+    echo "========================================"
+    echo
+    echo "Enter the registered DNS zones hosted by GoDaddy."
+    echo "Enter one zone per line, for example:"
+    echo "  jackthedog.eu"
+    echo "  danielczank.eu"
+    echo
+    echo "Enter an empty line when finished."
+    echo
+
+    while true; do
+        read -r -p "GoDaddy DNS zone (empty to finish): " input
+        input="${input%.}"
+
+        [[ -z "$input" ]] && break
+
+        valid_hostname "$input" ||
+            die "Invalid DNS zone name: $input"
+
+        if [[ -z "${seen[$input]:-}" ]]; then
+            zones+=("$input")
+            seen["$input"]=1
+        fi
+    done
+
+    ((${#zones[@]} > 0)) ||
+        die "At least one GoDaddy DNS zone must be configured for public ACME certificates."
+
+    {
+        printf 'GODADDY_DNS_ZONES=(\n'
+        for zone in "${zones[@]}"; do
+            printf '    %q\n' "$zone"
+        done
+        printf ')\n'
+    } > "${STATE_DIR}/godaddy-zones.conf"
+
+    chown root:root "${STATE_DIR}/godaddy-zones.conf"
+    chmod 600 "${STATE_DIR}/godaddy-zones.conf"
+
+    echo
+    echo "Saved GoDaddy DNS zones:"
+    printf '  - %s\n' "${zones[@]}"
+    echo
+}
+
 
 select_apps_interactive() {
     local app_id
@@ -919,12 +985,13 @@ case "$APP_DEPLOY_TYPE" in
             cp "$compose" "${runtime}/source-compose.yml"
 
             # The override is generated only in the runtime directory.
+           
             cat > "${runtime}/runtime-override.yml" <<EOF_OVERRIDE
-    services:
-    ${APP_SOURCE_SERVICE}:
-        ports: !override
-        - "127.0.0.1:${APP_PORT}:${APP_SOURCE_CONTAINER_PORT}"
-    EOF_OVERRIDE
+            services:
+            "${APP_SOURCE_SERVICE}":
+                ports: !override
+                - "127.0.0.1:${APP_PORT}:${APP_SOURCE_CONTAINER_PORT}"
+            EOF_OVERRIDE
 
             chmod 640 \
                 "${runtime}/source-compose.yml" \
@@ -951,28 +1018,23 @@ case "$APP_DEPLOY_TYPE" in
     dockerfile)
         root="${source_root}/unpacked/${APP_SOURCE_ROOT}"
         [[ -d "$root" ]] || root="${source_root}/unpacked"
-                if [[ ! -f "${root}/Dockerfile" ]]; then
-                    printf '\nNo Dockerfile found in: %s\n\n' "$root" >&2
-                    printf 'The wizard will not create or modify a Dockerfile.\n' >&2
-                    printf 'If you want to build this application, create the file yourself.\n\n' >&2
-                    printf 'Example commands (run them manually on the server):\n\n' >&2
-                    printf '  mkdir -p %q\n' "$root" >&2
-                    printf '  cd %q\n' "$root" >&2
-                    cat >&2 <<'EOF_DOCKER_HELP'
-        cat > Dockerfile <<'EOF'
-        FROM nginx:alpine
-        COPY . /usr/share/nginx/html
-        EXPOSE 80
-        EOF
-
-        The example above is for a static site only. For applications that need
-        a build step, runtime dependencies, or a different listening port, write
-        a Dockerfile appropriate for that application instead.
-
-        After creating the Dockerfile, run the application installation again.
-        EOF_DOCKER_HELP
-                    exit 2
-        fi
+            if [[ ! -f "${root}/Dockerfile" ]]; then
+                printf '\nNo Dockerfile found in: %s\n\n' "$root" >&2
+                printf 'The wizard will not create or modify a Dockerfile.\n' >&2
+                printf 'Create one manually if you want to use Dockerfile deployment.\n\n' >&2
+                printf 'Example commands for a static site:\n\n' >&2
+                printf '  mkdir -p %q\n' "$root" >&2
+                printf '  cd %q\n' "$root" >&2
+                printf '%s\n' \
+                    "  cat > Dockerfile <<'EOF'" \
+                    '  FROM nginx:alpine' \
+                    '  COPY . /usr/share/nginx/html' \
+                    '  EXPOSE 80' \
+                    '  EOF' >&2
+                printf '\nThis example is for a static site only. Adapt the Dockerfile to the application.\n' >&2
+                printf 'After creating it, run the application installation again.\n' >&2
+                exit 2
+            fi
         docker build -t "${APP_ID}:local" "$root"
         docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
         docker run -d --restart unless-stopped --name "$APP_CONTAINER" -p "127.0.0.1:${APP_PORT}:${APP_SOURCE_CONTAINER_PORT}" "${APP_ID}:local"
@@ -1058,39 +1120,77 @@ update_one_source() {
     log "The running application was not deployed, restarted, or changed."
 }
 
+
 update_source_only() {
-    local choice app_id
+    local choice app_id failures=0
     local selected=()
 
     echo
     echo "========================================"
-    echo " Update application source only"
+    echo " Update custom application source only"
     echo "========================================"
     echo
-    echo "This downloads source archives only. It does not deploy or restart applications."
-    show_apps
+    echo "This downloads source archives only."
+    echo "It does not deploy, rebuild, restart, or reload applications."
+    echo
 
+    while IFS= read -r app_id; do
+        [[ -n "$app_id" ]] || continue
+        load_app_config "$app_id" || continue
+
+        [[ "${APP_TYPE:-}" == "custom" ]] || continue
+        [[ -n "${APP_SOURCE_URL:-}" && -n "${APP_SOURCE_REF:-}" ]] || continue
+
+        printf '  - %s (%s)\n' "$APP_NAME" "$APP_ID"
+    done < <(app_ids)
+
+    echo
     read -r -p "Application ID, All, or Cancel: " choice
 
     case "$choice" in
         Cancel|cancel|CANCEL|"")
             echo "Source update cancelled."
-            return
+            return 0
             ;;
         All|all|ALL)
             while IFS= read -r app_id; do
-                [[ -n "$app_id" ]] && selected+=("$app_id")
+                [[ -n "$app_id" ]] || continue
+                load_app_config "$app_id" || continue
+                [[ "${APP_TYPE:-}" == "custom" ]] || continue
+                [[ -n "${APP_SOURCE_URL:-}" && -n "${APP_SOURCE_REF:-}" ]] || continue
+                selected+=("$app_id")
             done < <(app_ids)
             ;;
         *)
             validate_app_id "$choice"
+            load_app_config "$choice"
+            [[ "${APP_TYPE:-}" == "custom" ]] ||
+                die "Source-only update is available for custom applications only."
+            [[ -n "${APP_SOURCE_URL:-}" && -n "${APP_SOURCE_REF:-}" ]] ||
+                die "The application has no source URL or source ref."
             selected+=("$choice")
             ;;
     esac
 
+    ((${#selected[@]} > 0)) || {
+        echo "No eligible custom applications were selected."
+        return 0
+    }
+
     for app_id in "${selected[@]}"; do
-        update_one_source "$app_id" || true
+        if ! update_one_source "$app_id"; then
+            failures=$((failures + 1))
+            warn "Source update failed for ${app_id}."
+        fi
     done
+
+    if (( failures > 0 )); then
+        die "Source-only update finished with ${failures} failure(s). No deployment was performed."
+    fi
+
+    echo
+    echo "Source-only update completed successfully."
+    echo "No application deployment was performed."
 }
 
 install_application() {

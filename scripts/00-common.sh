@@ -380,10 +380,22 @@ app_is_running() {
                 curl -fsS --max-time 10 \
                     "$APP_HEALTHCHECK_URL" >/dev/null
                 ;;
+            
             compose)
-                docker compose -f "${runtime}/compose.yml" \
+                local service
+                service="${APP_SOURCE_SERVICE:-}"
+
+                if [[ -z "$service" && -f "${runtime}/source-service" ]]; then
+                    service="$(cat "${runtime}/source-service")"
+                fi
+
+                [[ -n "$service" ]] || return 1
+                [[ -f "${runtime}/compose.yml" ]] || return 1
+
+                docker compose \
+                    -f "${runtime}/compose.yml" \
                     ps --status running --services 2>/dev/null |
-                    grep -q .
+                    grep -Fxq -- "$service"
                 ;;
             dockerfile)
                 container="${APP_CONTAINER:-$APP_ID}"
@@ -684,9 +696,7 @@ app_nginx_install() {
     fi
 
     if [[ ! -f "$source_conf" ]]; then
-        warn "Nginx template is missing for ${app_id}: ${source_conf}"
-        rm -f "$runtime_conf"
-        return 1
+        die "Nginx template is missing for ${app_id}: ${source_conf}. Restore or generate the application's nginx.conf before continuing."
     fi
 
     if [[ "${APP_CERTIFICATE_ENABLED:-true}" == "true" ]]; then
