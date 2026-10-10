@@ -67,9 +67,19 @@ for app_id in $(app_ids); do
     load_app_config "$app_id" || continue
 
     if app_is_running "$app_id"; then
-        printf '[ OK ] %s container is running\n' "$APP_NAME"
+        if [[ "${APP_TYPE:-}" == "custom" &&
+              "${APP_DEPLOY_TYPE:-}" == "static" ]]; then
+            printf '[ OK ] %s static files are installed\n' "$APP_NAME"
+        else
+            printf '[ OK ] %s application is running\n' "$APP_NAME"
+        fi
     else
-        printf '[FAIL] %s container is not running\n' "$APP_NAME"
+        if [[ "${APP_TYPE:-}" == "custom" &&
+              "${APP_DEPLOY_TYPE:-}" == "static" ]]; then
+            printf '[FAIL] %s static files or health check failed\n' "$APP_NAME"
+        else
+            printf '[FAIL] %s application is not running\n' "$APP_NAME"
+        fi
         FAILURES=$((FAILURES + 1))
     fi
 

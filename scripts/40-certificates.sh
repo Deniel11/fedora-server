@@ -102,12 +102,23 @@ app_tls_mode() {
 }
 
 if [[ -f "${STATE_DIR}/domain-previous.env" ]]; then
+    previous_state="${STATE_DIR}/domain-previous.env"
     previous_mode=""
-    source "${STATE_DIR}/domain-previous.env"
-    previous_mode="${DOMAIN_MODE:-}"
-    rm -f "${STATE_DIR}/domain-previous.env"
-    if [[ "$previous_mode" == local ]]; then
-        find "$TLS_DIR" -mindepth 1 -maxdepth 1 -type f ! -name 'ca.key' ! -name 'ca.crt' -delete 2>/dev/null || true
+
+    previous_mode="$(
+        set -a
+        source "$previous_state"
+        printf '%s' "${DOMAIN_MODE:-}"
+    )"
+
+    rm -f "$previous_state"
+
+    if [[ "$previous_mode" == "local" ]]; then
+        find "$TLS_DIR" -mindepth 1 -maxdepth 1 -type f \
+            \( -name '*.crt' -o -name '*.key' -o -name '*.csr' -o -name '*.ext' \) \
+            ! -name 'ca.crt' \
+            ! -name 'ca.key' \
+            -delete 2>/dev/null || true
     fi
 fi
 

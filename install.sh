@@ -766,6 +766,106 @@ APP_CERTIFICATE_ENABLED=$( [[ "$tls" == "none" ]] && printf '"false"' || printf 
 APP_HEALTHCHECK_URL=$(printf '%q' "$health")
 EOF_APP
 
+    # Generate an Nginx template for this custom application.
+    # The repository's source files and any Dockerfile remain untouched.
+    if [[ "$tls" == "none" ]]; then
+        if [[ "$deploy" == "static" ]]; then
+            cat > "${appdir}/nginx.conf" <<'EOF_NGINX'
+server {
+    listen 80;
+    server_name __APP_CANONICAL_DOMAIN__ __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
+
+    location / {
+        root __APP_SOURCE_ROOT__;
+        index index.html;
+        try_files $uri $uri/ =404;
+    }
+}
+EOF_NGINX
+        else
+            cat > "${appdir}/nginx.conf" <<'EOF_NGINX'
+server {
+    listen 80;
+    server_name __APP_CANONICAL_DOMAIN__ __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
+
+    location / {
+        proxy_pass http://127.0.0.1:__APP_PORT__;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOF_NGINX
+        fi
+    else
+        if [[ "$deploy" == "static" ]]; then
+            cat > "${appdir}/nginx.conf" <<'EOF_NGINX'
+server {
+    listen 80;
+    server_name __APP_CANONICAL_DOMAIN__ __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
+    return 301 https://__APP_CANONICAL_DOMAIN__$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name __APP_CANONICAL_DOMAIN__ __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
+
+    ssl_certificate __APP_CERTIFICATE__;
+    ssl_certificate_key __APP_CERTIFICATE_KEY__;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    if ($host != "__APP_CANONICAL_DOMAIN__") {
+        return 301 https://__APP_CANONICAL_DOMAIN__$request_uri;
+    }
+
+    location / {
+        root __APP_SOURCE_ROOT__;
+        index index.html;
+        try_files $uri $uri/ =404;
+    }
+}
+EOF_NGINX
+        else
+            cat > "${appdir}/nginx.conf" <<'EOF_NGINX'
+server {
+    listen 80;
+    server_name __APP_CANONICAL_DOMAIN__ __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
+    return 301 https://__APP_CANONICAL_DOMAIN__$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name __APP_CANONICAL_DOMAIN__ __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
+
+    ssl_certificate __APP_CERTIFICATE__;
+    ssl_certificate_key __APP_CERTIFICATE_KEY__;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    if ($host != "__APP_CANONICAL_DOMAIN__") {
+        return 301 https://__APP_CANONICAL_DOMAIN__$request_uri;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:__APP_PORT__;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 86400;
+    }
+}
+EOF_NGINX
+        fi
+    fi
+
+    chmod 640 "${appdir}/nginx.conf"
+
     cat > "${appdir}/install.sh" <<'EOF_INSTALL'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -789,27 +889,89 @@ case "$APP_DEPLOY_TYPE" in
         find "${runtime}/www" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
         cp -a "$root"/. "${runtime}/www"/
         ;;
-    compose)
-        compose="${source_root}/unpacked/${APP_SOURCE_COMPOSE}"
-        [[ -f "$compose" ]] || { printf 'Compose file not found: %s\n' "$compose" >&2; exit 1; }
-        cp "$compose" "${runtime}/source-compose.yml"
-        printf '%s\n' "$APP_SOURCE_SERVICE" > "${runtime}/source-service"
-        printf '%s\n' "$APP_SOURCE_CONTAINER_PORT" > "${runtime}/container-port"
-        printf '%s\n' "$APP_DOMAIN" > "${runtime}/domain"
-        printf '%s\n' "$APP_PORT" > "${runtime}/host-port"
-        printf '%s\n' "$APP_CONTAINER" > "${runtime}/container-name"
-        cp "${runtime}/source-compose.yml" "${runtime}/compose.yml"
-        docker compose -f "${runtime}/compose.yml" config >/dev/null
-        docker compose -f "${runtime}/compose.yml" up -d
+        compose)
+            compose="${source_root}/unpacked/${APP_SOURCE_COMPOSE}"
+            [[ -f "$compose" ]] || {
+                printf 'Compose file not found: %s\n' "$compose" >&2
+                exit 1
+            }
+
+            [[ -n "${APP_SOURCE_SERVICE:-}" ]] || {
+                printf 'APP_SOURCE_SERVICE must name the Compose web service.\n' >&2
+                exit 1
+            }
+
+            [[ "${APP_SOURCE_CONTAINER_PORT:-}" =~ ^[0-9]+$ ]] &&
+                (( APP_SOURCE_CONTAINER_PORT >= 1 &&
+                APP_SOURCE_CONTAINER_PORT <= 65535 )) || {
+                printf 'Invalid container port: %s\n' \
+                    "${APP_SOURCE_CONTAINER_PORT:-unset}" >&2
+                exit 1
+            }
+
+            [[ "${APP_PORT:-}" =~ ^[0-9]+$ ]] &&
+                (( APP_PORT >= 1 && APP_PORT <= 65535 )) || {
+                printf 'Invalid host port: %s\n' "${APP_PORT:-unset}" >&2
+                exit 1
+            }
+
+            # Keep the upstream Compose file unchanged.
+            cp "$compose" "${runtime}/source-compose.yml"
+
+            # The override is generated only in the runtime directory.
+            cat > "${runtime}/runtime-override.yml" <<EOF_OVERRIDE
+    services:
+    ${APP_SOURCE_SERVICE}:
+        ports: !override
+        - "127.0.0.1:${APP_PORT}:${APP_SOURCE_CONTAINER_PORT}"
+    EOF_OVERRIDE
+
+            chmod 640 \
+                "${runtime}/source-compose.yml" \
+                "${runtime}/runtime-override.yml"
+
+            # Resolve build contexts and relative paths against the source tree,
+            # validate the merged configuration, and save its normalized result.
+            docker compose \
+                --project-directory "${source_root}/unpacked" \
+                -f "${runtime}/source-compose.yml" \
+                -f "${runtime}/runtime-override.yml" \
+                config > "${runtime}/compose.yml"
+
+            docker compose \
+                -f "${runtime}/compose.yml" \
+                up -d
+
+            printf '%s\n' "$APP_SOURCE_SERVICE" > "${runtime}/source-service"
+            printf '%s\n' "$APP_SOURCE_CONTAINER_PORT" > "${runtime}/container-port"
+            printf '%s\n' "$APP_DOMAIN" > "${runtime}/domain"
+            printf '%s\n' "$APP_PORT" > "${runtime}/host-port"
+            printf '%s\n' "$APP_CONTAINER" > "${runtime}/container-name"
         ;;
     dockerfile)
         root="${source_root}/unpacked/${APP_SOURCE_ROOT}"
         [[ -d "$root" ]] || root="${source_root}/unpacked"
-        if [[ ! -f "${root}/Dockerfile" ]]; then
-            printf 'No Dockerfile found in %s.\n' "$root" >&2
-            printf 'Create it manually using mkdir -p and cat > Dockerfile <<'\''EOF'\''.\n' >&2
-            printf 'The wizard does not create or modify Dockerfiles.\n' >&2
-            exit 2
+                if [[ ! -f "${root}/Dockerfile" ]]; then
+                    printf '\nNo Dockerfile found in: %s\n\n' "$root" >&2
+                    printf 'The wizard will not create or modify a Dockerfile.\n' >&2
+                    printf 'If you want to build this application, create the file yourself.\n\n' >&2
+                    printf 'Example commands (run them manually on the server):\n\n' >&2
+                    printf '  mkdir -p %q\n' "$root" >&2
+                    printf '  cd %q\n' "$root" >&2
+                    cat >&2 <<'EOF_DOCKER_HELP'
+        cat > Dockerfile <<'EOF'
+        FROM nginx:alpine
+        COPY . /usr/share/nginx/html
+        EXPOSE 80
+        EOF
+
+        The example above is for a static site only. For applications that need
+        a build step, runtime dependencies, or a different listening port, write
+        a Dockerfile appropriate for that application instead.
+
+        After creating the Dockerfile, run the application installation again.
+        EOF_DOCKER_HELP
+                    exit 2
         fi
         docker build -t "${APP_ID}:local" "$root"
         docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true

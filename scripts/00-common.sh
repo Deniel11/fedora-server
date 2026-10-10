@@ -366,8 +366,36 @@ app_is_installed() {
 app_is_running() {
     local app_id="$1"
     local container
+    local runtime
 
     load_app_config "$app_id" || return 1
+
+    runtime="$(app_runtime_dir "$app_id")"
+
+    if [[ "${APP_TYPE:-}" == "custom" ]]; then
+        case "${APP_DEPLOY_TYPE:-}" in
+            static)
+                [[ -d "${runtime}/www" ]] || return 1
+                [[ -n "${APP_HEALTHCHECK_URL:-}" ]] || return 0
+                curl -fsS --max-time 10 \
+                    "$APP_HEALTHCHECK_URL" >/dev/null
+                ;;
+            compose)
+                docker compose -f "${runtime}/compose.yml" \
+                    ps --status running --services 2>/dev/null |
+                    grep -q .
+                ;;
+            dockerfile)
+                container="${APP_CONTAINER:-$APP_ID}"
+                [[ "$(docker inspect -f '{{.State.Running}}' \
+                    "$container" 2>/dev/null)" == "true" ]]
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+        return
+    fi
 
     container="${APP_CONTAINER:-$APP_ID}"
 
@@ -645,16 +673,37 @@ app_nginx_install() {
     local runtime_conf
     local cert=""
     local key=""
+    local source_root
 
     source_conf="$(app_dir "$app_id")/nginx.conf"
     runtime_conf="${NGINX_RUNTIME_DIR}/${app_id}.conf"
 
-    [[ -f "$source_conf" ]] || return 0
-    [[ "${APP_NGINX_ENABLED:-true}" == "true" ]] || return 0
+    if [[ "${APP_NGINX_ENABLED:-true}" != "true" ]]; then
+        rm -f "$runtime_conf"
+        return 0
+    fi
+
+    if [[ ! -f "$source_conf" ]]; then
+        warn "Nginx template is missing for ${app_id}: ${source_conf}"
+        rm -f "$runtime_conf"
+        return 1
+    fi
 
     if [[ "${APP_CERTIFICATE_ENABLED:-true}" == "true" ]]; then
         cert="$(app_certificate_path "$app_id")"
         key="$(app_certificate_key_path "$app_id")"
+
+        [[ -n "$cert" && -n "$key" ]] || {
+            warn "Certificate paths are not configured for ${app_id}."
+            return 1
+        }
+    fi
+
+    source_root="$(app_runtime_dir "$app_id")/public"
+
+    if [[ "${APP_TYPE:-}" == "custom" &&
+          "${APP_DEPLOY_TYPE:-}" == "static" ]]; then
+        source_root="$(app_runtime_dir "$app_id")/www"
     fi
 
     install -d -m 0755 "$NGINX_RUNTIME_DIR"
@@ -662,11 +711,13 @@ app_nginx_install() {
     sed \
         -e "s|__APP_DOMAIN__|${APP_DOMAIN}|g" \
         -e "s|__APP_CANONICAL_DOMAIN__|${APP_CANONICAL_DOMAIN:-$APP_DOMAIN}|g" \
+        -e "s|__APP_DOMAIN_ALIASES__|${APP_DOMAIN_ALIASES:-}|g" \
         -e "s|__APP_PORT__|${APP_PORT}|g" \
-        -e "s|__APP_TLS_NAME__|${APP_TLS_NAME}|g" \
+        -e "s|__APP_TLS_NAME__|${APP_TLS_NAME:-$app_id}|g" \
         -e "s|__APP_CERTIFICATE__|${cert}|g" \
         -e "s|__APP_CERTIFICATE_KEY__|${key}|g" \
-        -e "s|__APP_SOURCE_ROOT__|${APP_RUNTIME_SOURCE_ROOT:-$(app_runtime_dir "$app_id")/public}|g" \
+        -e "s|__APP_SOURCE_ROOT__|${source_root}|g" \
+        -e "s|__APP_TLS_ENABLED__|${APP_CERTIFICATE_ENABLED:-true}|g" \
         "$source_conf" > "$runtime_conf"
 }
 
