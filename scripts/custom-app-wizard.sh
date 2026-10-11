@@ -358,9 +358,24 @@ choose_ports() {
 
 write_nginx_config() {
     local dir="$1"
-    local aliases="$APP_DOMAIN_ALIASES"
+    local aliases=""
     local alias_server=""
     local redirect_scheme="https"
+    local candidate
+    local -a unique_aliases=()
+    local -A seen_aliases=()
+
+    for candidate in $APP_DOMAIN_ALIASES; do
+        [[ "$candidate" == "$APP_DOMAIN" ||
+           "$candidate" == "$APP_CANONICAL_DOMAIN" ]] && continue
+
+        [[ -n "${seen_aliases[$candidate]:-}" ]] && continue
+
+        seen_aliases["$candidate"]=1
+        unique_aliases+=("$candidate")
+    done
+
+    aliases="${unique_aliases[*]}"
 
     if [[ "$APP_TLS_MODE" == "none" ]]; then
         redirect_scheme="http"
