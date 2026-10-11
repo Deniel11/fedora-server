@@ -25,15 +25,26 @@ if [[ -f "$SELECTION_FILE" ]]; then
     SELECTED_APPS="${SELECTED_APPS:-}"
 fi
 
+
 load_tls_app_config() {
     local id="$1" file
-    unset APP_ID APP_NAME APP_DOMAIN APP_PORT APP_EXTRA_PORTS APP_CONTAINER APP_TLS_NAME APP_NGINX_ENABLED APP_CERTIFICATE_ENABLED APP_TLS_MODE APP_DOMAIN_ALIASES APP_CANONICAL_DOMAIN APP_SOURCE_TYPE APP_SOURCE_URL APP_SOURCE_REF APP_DEPLOY_TYPE
+
+    unset APP_ID APP_NAME APP_TYPE APP_ENABLED APP_DOMAIN APP_PORT
+    unset APP_EXTRA_PORTS APP_CONTAINER APP_TLS_NAME APP_NGINX_ENABLED
+    unset APP_CERTIFICATE_ENABLED APP_TLS_MODE APP_DOMAIN_ALIASES
+    unset APP_CANONICAL_DOMAIN APP_SOURCE_TYPE APP_SOURCE_URL
+    unset APP_SOURCE_REF APP_DEPLOY_TYPE APP_SOURCE_SERVICE
+    unset APP_SOURCE_COMPOSE APP_SOURCE_CONTAINER_PORT APP_SOURCE_ROOT
+
     file="$(app_dir "$id")/app.conf"
     [[ -f "$file" ]] || return 1
+
     source "$file"
+
     [[ "${APP_ID:-}" == "$id" ]] || die "Invalid APP_ID in $file"
     [[ "${APP_ENABLED:-true}" == true ]]
 }
+
 
 certificate_apps() {
     local id
@@ -183,18 +194,23 @@ while IFS= read -r app_id; do
         local-ca)
             cert="${TLS_DIR}/${APP_TLS_NAME:-$app_id}.crt"
             canonical="${APP_CANONICAL_DOMAIN:-$APP_DOMAIN}"
+            local_aliases="${APP_DOMAIN_ALIASES:-}"
+
+            if [[ "$APP_DOMAIN" != "$canonical" ]]; then
+                local_aliases="${APP_DOMAIN}${local_aliases:+ ${local_aliases}}"
+            fi
 
             if certificate_needs_regeneration \
                 "$cert" \
                 "$canonical" \
                 "$STATIC_IP" \
-                "${APP_DOMAIN_ALIASES:-}"; then
+                "$local_aliases"; then
                 rm -f "${TLS_DIR}/${APP_TLS_NAME:-$app_id}.key" "$cert"
                 local_generate_leaf \
                     "${APP_TLS_NAME:-$app_id}" \
                     "$canonical" \
                     "$STATIC_IP" \
-                    "${APP_DOMAIN_ALIASES:-}"
+                    "$local_aliases"
             fi
             ;;
         acme) ;;
