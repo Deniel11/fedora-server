@@ -359,6 +359,39 @@ app_ids() {
     shopt -u nullglob
 }
 
+certificate_app_ids() {
+    local selection_file="${STATE_DIR}/selected-apps.env"
+    local selected_apps=""
+    local app_id
+    local -A seen=()
+
+    if [[ -f "$selection_file" ]]; then
+        selected_apps="$(
+            unset SELECTED_APPS
+            source "$selection_file"
+            printf '%s' "${SELECTED_APPS:-}"
+        )"
+    fi
+
+    for app_id in $selected_apps; do
+        [[ -n "$app_id" ]] || continue
+        [[ -n "${seen[$app_id]:-}" ]] && continue
+
+        seen["$app_id"]=1
+        printf '%s\n' "$app_id"
+    done
+
+    while IFS= read -r app_id; do
+        [[ -n "$app_id" ]] || continue
+        [[ -n "${seen[$app_id]:-}" ]] && continue
+
+        if app_is_installed "$app_id"; then
+            seen["$app_id"]=1
+            printf '%s\n' "$app_id"
+        fi
+    done < <(app_ids)
+}
+
 app_name() {
     local app_id="$1"
 

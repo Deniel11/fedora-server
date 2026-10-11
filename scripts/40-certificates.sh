@@ -45,21 +45,6 @@ load_tls_app_config() {
     [[ "${APP_ENABLED:-true}" == true ]]
 }
 
-
-certificate_apps() {
-    local id
-    declare -A seen=()
-    for id in $SELECTED_APPS; do
-        [[ -n "$id" ]] || continue
-        seen["$id"]=1
-        printf '%s\n' "$id"
-    done
-    while IFS= read -r id; do
-        [[ -n "$id" && -z "${seen[$id]:-}" ]] || continue
-        app_is_installed "$id" && printf '%s\n' "$id"
-    done < <(app_ids)
-}
-
 local_generate_ca() {
     local key="${TLS_DIR}/ca.key" cert="${TLS_DIR}/ca.crt"
     [[ -s "$key" && -s "$cert" ]] && return 0
@@ -216,7 +201,7 @@ while IFS= read -r app_id; do
         acme) ;;
         *) die "Unsupported TLS mode '$tls_mode' for application '$app_id'." ;;
     esac
-done < <(certificate_apps)
+done < <(certificate_app_ids)
 
 
 # Generate local infrastructure certificates when local mode is active.
@@ -264,7 +249,7 @@ while IFS= read -r app_id; do
     elif [[ "$DOMAIN_MODE" == public ]]; then
         need_wildcard_cert=true
     fi
-done < <(certificate_apps)
+done < <(certificate_app_ids)
 
 if [[ "$need_wildcard_cert" != true &&
       "${#custom_acme_apps[@]}" -eq 0 ]]; then
