@@ -35,18 +35,19 @@ source "$DOMAIN_STATE"
 
 BASE_DOMAIN="${BASE_DOMAIN:-}"
 
-[[ -n "$BASE_DOMAIN" ]] ||
-    die "BASE_DOMAIN is empty; public mode is required."
-
 GODADDY_DNS_ZONES=()
 
 if [[ -r "$ZONE_CONFIG" ]]; then
     source "$ZONE_CONFIG"
 fi
 
-if ((${#GODADDY_DNS_ZONES[@]} == 0)) && [[ -n "${BASE_DOMAIN:-}" ]]; then
+if ((${#GODADDY_DNS_ZONES[@]} == 0)) &&
+   [[ -n "$BASE_DOMAIN" ]]; then
     GODADDY_DNS_ZONES=("$BASE_DOMAIN")
 fi
+
+((${#GODADDY_DNS_ZONES[@]} > 0)) ||
+    die "No GoDaddy DNS zones are configured. Configure them with the installer before requesting ACME certificates."
 
 [[ -n "${CERTBOT_DOMAIN:-}" ]] ||
     die "CERTBOT_DOMAIN is not set"

@@ -621,6 +621,7 @@ settings_selection_menu() {
     NETWORK_RECONFIGURE=false
     APP_RECONFIGURE=false
     GODADDY_RECONFIGURE=false
+    GODADDY_ZONES_RECONFIGURE=false
 
     echo
     echo "========================================"
@@ -635,11 +636,12 @@ settings_selection_menu() {
     echo "  3) Network settings"
     echo "  4) Application selection"
     echo "  5) GoDaddy PAT"
-    echo "  6) All settings"
-    echo "  7) Cancel"
+    echo "  6) GoDaddy DNS zones"
+    echo "  7) All settings"
+    echo "  8) Cancel"
     echo
 
-    read -r -p "Choose one option [1-7]: " choice
+    read -r -p "Choose one option [1-8]: " choice
 
     case "$choice" in
         1) DOMAIN_RECONFIGURE=true ;;
@@ -647,18 +649,59 @@ settings_selection_menu() {
         3) NETWORK_RECONFIGURE=true ;;
         4) APP_RECONFIGURE=true ;;
         5) GODADDY_RECONFIGURE=true ;;
-        6)
+        6) GODADDY_ZONES_RECONFIGURE=true ;;
+        7)
             DOMAIN_RECONFIGURE=true
             PROXMOX_RECONFIGURE=true
             NETWORK_RECONFIGURE=true
             APP_RECONFIGURE=true
             GODADDY_RECONFIGURE=true
+            GODADDY_ZONES_RECONFIGURE=true
             ;;
-        7) return 1 ;;
+        8) return 1 ;;
         *) die "Invalid settings selection: $choice" ;;
     esac
 
     return 0
+}
+
+modify_godaddy_zones() {
+    local answer
+
+    load_domain_state
+
+    if [[ "$DOMAIN_MODE" != "public" ]]; then
+        echo "GoDaddy DNS zones are only used for public ACME certificates."
+        return 0
+    fi
+
+    echo
+    echo "========================================"
+    echo " GoDaddy DNS zone configuration"
+    echo "========================================"
+    echo
+
+    if [[ -s "${STATE_DIR}/godaddy-zones.conf" ]]; then
+        echo "Current DNS zones:"
+        (
+            unset GODADDY_DNS_ZONES
+            source "${STATE_DIR}/godaddy-zones.conf"
+            printf '  - %s\n' "${GODADDY_DNS_ZONES[@]}"
+        )
+        echo
+    else
+        echo "No saved DNS zone configuration was found."
+        echo
+    fi
+
+    read -r -p "Replace the saved DNS zone list? [y/N]: " answer
+
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        echo "DNS zone configuration was not changed."
+        return 0
+    fi
+
+    configure_godaddy_zones_interactive
 }
 
 modify_godaddy_pat() {
@@ -1337,6 +1380,11 @@ modify_settings() {
     fi
 
     load_domain_state
+
+    if [[ "${GODADDY_ZONES_RECONFIGURE:-false}" == true ]]; then
+        modify_godaddy_zones
+        GODADDY_ZONES_RECONFIGURE=false
+    fi
 
     if [[ "$DOMAIN_RECONFIGURE" == true ]]; then
         write_domain_state_interactive
