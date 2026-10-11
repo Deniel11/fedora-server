@@ -676,10 +676,11 @@ app_certificate_path() {
             none)
                 return 0
                 ;;
-            *)
+             *) 
                 die "Unsupported application TLS mode: ${APP_TLS_MODE}"
                 ;;
         esac
+        return 0
     fi
 
     if [[ "$DOMAIN_MODE" == "public" ]]; then
@@ -705,10 +706,11 @@ app_certificate_key_path() {
             none)
                 return 0
                 ;;
-            *)
+            *) 
                 die "Unsupported application TLS mode: ${APP_TLS_MODE}"
                 ;;
         esac
+        return 0
     fi
 
     if [[ "$DOMAIN_MODE" == "public" ]]; then
