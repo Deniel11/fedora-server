@@ -224,8 +224,10 @@ if [[ "$DOMAIN_MODE" == local ]]; then
     find "$TLS_DIR" -maxdepth 1 -type f -name '*.crt' -exec chmod 644 {} +
 fi
 
-# Determine which ACME certificates are actually required.
 need_wildcard_cert=false
+if [[ "$DOMAIN_MODE" == "public" ]]; then
+    need_wildcard_cert=true
+fi
 custom_acme_apps=()
 
 while IFS= read -r app_id; do
