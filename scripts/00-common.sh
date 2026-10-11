@@ -376,6 +376,13 @@ certificate_app_ids() {
     for app_id in $selected_apps; do
         [[ -n "$app_id" ]] || continue
         [[ -n "${seen[$app_id]:-}" ]] && continue
+        [[ -f "$(app_dir "$app_id")/app.conf" ]] || continue
+        [[ -f "$(app_dir "$app_id")/install.sh" ]] || continue
+        [[ -f "$(app_dir "$app_id")/verify.sh" ]] || continue
+
+        if ! load_app_config "$app_id"; then
+            continue
+        fi
 
         seen["$app_id"]=1
         printf '%s\n' "$app_id"
