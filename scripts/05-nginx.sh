@@ -132,21 +132,40 @@ else
     systemctl enable --now nginx
 fi
 
-has_custom_acme=false
+needs_certbot=false
 
 while IFS= read -r app_id; do
     [[ -n "$app_id" ]] || continue
 
+    if [[ " ${selected_apps} " != *" ${app_id} "* ]] &&
+       ! app_is_installed "$app_id"; then
+        continue
+    fi
+
     load_app_config "$app_id" || continue
 
-    if [[ "${APP_TYPE:-}" == "custom" &&
-          "${APP_TLS_MODE:-}" == "acme" ]]; then
-        has_custom_acme=true
+    [[ "${APP_CERTIFICATE_ENABLED:-true}" == "true" ]] || continue
+
+    tls_mode="${APP_TLS_MODE:-}"
+
+    if [[ -z "$tls_mode" ]]; then
+        if [[ "$DOMAIN_MODE" == "public" ]]; then
+            tls_mode="acme"
+        else
+            tls_mode="local-ca"
+        fi
+    fi
+
+    [[ "$tls_mode" == "acme" ]] || continue
+
+    if [[ "$DOMAIN_MODE" == "public" ||
+          "${APP_TYPE:-}" == "custom" ]]; then
+        needs_certbot=true
         break
     fi
 done < <(app_ids)
 
-if [[ "$DOMAIN_MODE" == public || "$has_custom_acme" == true ]]; then
+if [[ "$needs_certbot" == true ]]; then
     cat > /etc/systemd/system/fedora-server-certbot-renew.service <<'EOF_SERVICE'
 [Unit]
 Description=Renew Fedora Server ACME certificates

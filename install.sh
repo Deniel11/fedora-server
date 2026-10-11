@@ -276,8 +276,8 @@ write_domain_state_interactive() {
         load_domain_state
         ensure_godaddy_credentials
 
-        if [[ "$DOMAIN_MODE" == "public" &&
-              ! -s "${STATE_DIR}/godaddy-zones.conf" ]]; then
+        if { [[ "$DOMAIN_MODE" == "public" ]] || has_custom_acme_app; } &&
+        [[ ! -s "${STATE_DIR}/godaddy-zones.conf" ]]; then
             configure_godaddy_zones_interactive
         fi
 
@@ -339,6 +339,10 @@ write_domain_state_interactive() {
 
         save_domain_state
         load_domain_state
+        if has_custom_acme_app; then
+            ensure_godaddy_credentials
+            configure_godaddy_zones_interactive
+        fi
     fi
 }
 
@@ -348,7 +352,10 @@ configure_godaddy_zones_interactive() {
     local -a zones=()
     local -A seen=()
 
-    [[ "${DOMAIN_MODE:-local}" == "public" ]] || return 0
+    if [[ "${DOMAIN_MODE:-local}" != "public" ]] &&
+    ! has_custom_acme_app; then
+        return 0
+    fi
 
     install -d -m 0750 "$STATE_DIR"
 
@@ -670,8 +677,9 @@ modify_godaddy_zones() {
 
     load_domain_state
 
-    if [[ "$DOMAIN_MODE" != "public" ]]; then
-        echo "GoDaddy DNS zones are only used for public ACME certificates."
+    if [[ "$DOMAIN_MODE" != "public" ]] &&
+    ! has_custom_acme_app; then
+        echo "No public-mode or custom ACME application requires GoDaddy DNS zones."
         return 0
     fi
 

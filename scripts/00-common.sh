@@ -98,13 +98,33 @@ godaddy_credentials_valid() {
     grep -Eq '^GODADDY_PAT[[:space:]]*=' "$GODADDY_CREDENTIALS" || return 1
 }
 
+has_custom_acme_app() {
+    local app_id
+
+    while IFS= read -r app_id; do
+        [[ -n "$app_id" ]] || continue
+
+        load_app_config "$app_id" || continue
+
+        if [[ "${APP_TYPE:-}" == "custom" &&
+              "${APP_TLS_MODE:-}" == "acme" &&
+              "${APP_CERTIFICATE_ENABLED:-true}" == "true" ]]; then
+            return 0
+        fi
+    done < <(app_ids)
+
+    return 1
+}
+
 ensure_godaddy_credentials() {
-    [[ "${DOMAIN_MODE:-local}" == "public" ]] || return 0
+    if [[ "${DOMAIN_MODE:-local}" != "public" ]] && ! has_custom_acme_app; then
+        return 0
+    fi
     godaddy_credentials_valid && return 0
 
     echo
-    echo "GoDaddy DNS-01 credentials are required for public HTTPS certificates."
-    echo "Create a GoDaddy Personal Access Token (PAT) with the domains.dns:update scope."
+    echo "GoDaddy DNS-01 credentials are required for public mode or custom ACME certificates."
+    echo "Create a GoDaddy Personal Access Token (PAT) with the domains.domain:read and domains.dns:update scope."
     echo
 
     local pat
@@ -286,6 +306,7 @@ load_app_config() {
         APP_ID \
         APP_NAME \
         APP_TYPE \
+        APP_ENABLED \
         APP_SOURCE_TYPE \
         APP_SOURCE_URL \
         APP_SOURCE_REF \
