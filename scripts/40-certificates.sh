@@ -99,11 +99,31 @@ local_generate_leaf() {
 }
 
 certificate_needs_regeneration() {
-    local cert="$1" domain="$2" ip="$3"
+    local cert="$1"
+    local domain="$2"
+    local ip="$3"
+    local aliases="${4:-}"
+    local alias
+    local san
+
     [[ -s "$cert" ]] || return 0
-    openssl x509 -checkend $((30 * 86400)) -noout -in "$cert" >/dev/null 2>&1 || return 0
-    openssl x509 -in "$cert" -noout -ext subjectAltName | grep -Fq "DNS:${domain}" || return 0
-    openssl x509 -in "$cert" -noout -ext subjectAltName | grep -Fq "IP Address:${ip}" || return 0
+
+    openssl x509 \
+        -checkend $((30 * 86400)) \
+        -noout \
+        -in "$cert" >/dev/null 2>&1 || return 0
+
+    san="$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null)" ||
+        return 0
+
+    printf '%s\n' "$san" | grep -Fq "DNS:${domain}" || return 0
+    printf '%s\n' "$san" | grep -Fq "IP Address:${ip}" || return 0
+
+    for alias in $aliases; do
+        valid_hostname "$alias" || return 0
+        printf '%s\n' "$san" | grep -Fq "DNS:${alias}" || return 0
+    done
+
     return 1
 }
 
@@ -162,11 +182,17 @@ while IFS= read -r app_id; do
         none) continue ;;
         local-ca)
             cert="${TLS_DIR}/${APP_TLS_NAME:-$app_id}.crt"
-            if certificate_needs_regeneration "$cert" "$APP_DOMAIN" "$STATIC_IP"; then
+            canonical="${APP_CANONICAL_DOMAIN:-$APP_DOMAIN}"
+
+            if certificate_needs_regeneration \
+                "$cert" \
+                "$canonical" \
+                "$STATIC_IP" \
+                "${APP_DOMAIN_ALIASES:-}"; then
                 rm -f "${TLS_DIR}/${APP_TLS_NAME:-$app_id}.key" "$cert"
                 local_generate_leaf \
                     "${APP_TLS_NAME:-$app_id}" \
-                    "${APP_CANONICAL_DOMAIN:-$APP_DOMAIN}" \
+                    "$canonical" \
                     "$STATIC_IP" \
                     "${APP_DOMAIN_ALIASES:-}"
             fi
@@ -365,6 +391,7 @@ for app_id in "${custom_acme_apps[@]}"; do
             --agree-tos \
             "${email_args[@]}" \
             --cert-name "$cert_name" \
+            --force-renewal \
             "${domain_args[@]}"
     else
         log "Custom certificate '${cert_name}' is valid and contains the configured DNS names."

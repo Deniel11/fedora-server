@@ -981,11 +981,8 @@ case "$APP_DEPLOY_TYPE" in
                 exit 1
             }
 
-            # Keep the upstream Compose file unchanged.
             cp "$compose" "${runtime}/source-compose.yml"
 
-            # The override is generated only in the runtime directory.
-           
             cat > "${runtime}/runtime-override.yml" <<EOF_OVERRIDE
             services:
             "${APP_SOURCE_SERVICE}":
@@ -997,8 +994,6 @@ case "$APP_DEPLOY_TYPE" in
                 "${runtime}/source-compose.yml" \
                 "${runtime}/runtime-override.yml"
 
-            # Resolve build contexts and relative paths against the source tree,
-            # validate the merged configuration, and save its normalized result.
             docker compose \
                 --project-directory "${source_root}/unpacked" \
                 -f "${runtime}/source-compose.yml" \
