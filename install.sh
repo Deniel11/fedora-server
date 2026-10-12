@@ -743,7 +743,9 @@ modify_godaddy_pat() {
 create_custom_app() {
     local name id url ref archive deploy compose service port root
     local domain aliases canonical tls host_port container health
+    local alias normalized_aliases=""
     local appdir
+    local -A seen_aliases=()
 
     echo
     echo "========================================"
@@ -833,6 +835,30 @@ create_custom_app() {
     canonical="${canonical:-$domain}"
     valid_hostname "$canonical" || die "Invalid canonical domain."
 
+    # Keep the primary domain, canonical domain and aliases unique.
+    # Include the canonical name as an alias only if it differs from primary.
+    normalized_aliases=""
+
+    if [[ "$canonical" != "$domain" ]]; then
+        normalized_aliases="$canonical"
+        seen_aliases["$canonical"]=1
+    fi
+
+    for alias in $aliases; do
+        valid_hostname "$alias" || die "Invalid alias: $alias"
+
+        [[ "$alias" == "$domain" ||
+           "$alias" == "$canonical" ]] && continue
+
+        [[ -n "${seen_aliases[$alias]:-}" ]] && continue
+
+        seen_aliases["$alias"]=1
+        normalized_aliases+="${normalized_aliases:+ }${alias}"
+    done
+
+    aliases="$normalized_aliases"
+    unset seen_aliases
+
     echo
     echo "TLS mode:"
     echo "  1) Public ACME certificate"
@@ -890,7 +916,7 @@ EOF_APP
             cat > "${appdir}/nginx.conf" <<'EOF_NGINX'
 server {
     listen 80;
-    server_name __APP_CANONICAL_DOMAIN__ __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
+    server_name __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
 
     location / {
         root __APP_SOURCE_ROOT__;
@@ -903,7 +929,7 @@ EOF_NGINX
             cat > "${appdir}/nginx.conf" <<'EOF_NGINX'
 server {
     listen 80;
-    server_name __APP_CANONICAL_DOMAIN__ __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
+    server_name __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
 
     location / {
         proxy_pass http://127.0.0.1:__APP_PORT__;
@@ -920,14 +946,14 @@ EOF_NGINX
             cat > "${appdir}/nginx.conf" <<'EOF_NGINX'
 server {
     listen 80;
-    server_name __APP_CANONICAL_DOMAIN__ __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
+    server_name __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
     return 301 https://__APP_CANONICAL_DOMAIN__$request_uri;
 }
 
 server {
     listen 443 ssl;
     http2 on;
-    server_name __APP_CANONICAL_DOMAIN__ __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
+    server_name __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
 
     ssl_certificate __APP_CERTIFICATE__;
     ssl_certificate_key __APP_CERTIFICATE_KEY__;
@@ -948,14 +974,14 @@ EOF_NGINX
             cat > "${appdir}/nginx.conf" <<'EOF_NGINX'
 server {
     listen 80;
-    server_name __APP_CANONICAL_DOMAIN__ __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
+    server_name __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
     return 301 https://__APP_CANONICAL_DOMAIN__$request_uri;
 }
 
 server {
     listen 443 ssl;
     http2 on;
-    server_name __APP_CANONICAL_DOMAIN__ __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
+    server_name __APP_DOMAIN__ __APP_DOMAIN_ALIASES__;
 
     ssl_certificate __APP_CERTIFICATE__;
     ssl_certificate_key __APP_CERTIFICATE_KEY__;
@@ -1035,11 +1061,11 @@ case "$APP_DEPLOY_TYPE" in
             cp "$compose" "${runtime}/source-compose.yml"
 
             cat > "${runtime}/runtime-override.yml" <<EOF_OVERRIDE
-            services:
-            "${APP_SOURCE_SERVICE}":
-                ports: !override
-                - "127.0.0.1:${APP_PORT}:${APP_SOURCE_CONTAINER_PORT}"
-            EOF_OVERRIDE
+services:
+  "${APP_SOURCE_SERVICE}":
+    ports: !override
+      - "127.0.0.1:${APP_PORT}:${APP_SOURCE_CONTAINER_PORT}"
+EOF_OVERRIDE
 
             chmod 640 \
                 "${runtime}/source-compose.yml" \
@@ -1120,6 +1146,13 @@ elif [[ -n "${APP_CONTAINER:-}" ]]; then
     docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
 fi
 rm -f "${NGINX_RUNTIME_DIR}/${app_id}.conf"
+
+if [[ "${APP_TYPE:-}" == "custom" ]]; then
+    rm -rf -- \
+        "$runtime" \
+        "/opt/fedora-server-sources/${app_id}" \
+        "$(app_dir "$app_id")"
+fi
 EOF_REMOVE
     chmod 750 "${appdir}/remove.sh"
 
@@ -1486,6 +1519,12 @@ remove_application() {
         )
     fi
 
+    if [[ "${APP_TYPE:-}" == "custom" ]]; then
+        rm -rf -- \
+            "$(app_dir "$app_id")" \
+            "${RUNTIME_SOURCE_DIR}/${app_id}"
+    fi
+
     rm -rf "$runtime"
 
     app_nginx_remove "$app_id"
@@ -1584,6 +1623,12 @@ remove_server_package() {
                         true
                 fi
             )
+        fi
+
+        if [[ "${APP_TYPE:-}" == "custom" ]]; then
+            rm -rf -- \
+                "$(app_dir "$app_id")" \
+                "${RUNTIME_SOURCE_DIR}/${app_id}"
         fi
 
         rm -rf "$runtime"

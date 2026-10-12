@@ -490,7 +490,8 @@ require_fedora
 load_config
 load_domain_state
 ensure_dirs
-load_app_config "$APP_ID"
+app_id="$(basename "$(dirname "${BASH_SOURCE[0]}")")"
+load_app_config "$app_id"
 
 runtime="$(app_runtime_dir "$APP_ID")"
 source_dir="${runtime}/source"
@@ -581,7 +582,8 @@ require_root
 require_fedora
 load_config
 load_domain_state
-load_app_config "$APP_ID"
+app_id="$(basename "$(dirname "${BASH_SOURCE[0]}")")"
+load_app_config "$app_id"
 
 runtime="$(app_runtime_dir "$APP_ID")"
 
@@ -623,7 +625,8 @@ require_root
 require_fedora
 load_config
 load_domain_state
-load_app_config "$APP_ID"
+app_id="$(basename "$(dirname "${BASH_SOURCE[0]}")")"
+load_app_config "$app_id"
 
 runtime="$(app_runtime_dir "$APP_ID")"
 
@@ -636,8 +639,14 @@ if [[ "$APP_DEPLOY_TYPE" == "compose" || "$APP_DEPLOY_TYPE" == "dockerfile" ]]; 
     fi
 fi
 
-rm -rf "$runtime"
+legacy_source_dir="/opt/fedora-server-sources/${APP_ID}"
+app_definition_dir="$(app_dir "$APP_ID")"
+
 app_nginx_remove "$APP_ID"
+
+# The custom app definition and all app-specific runtime/source files are
+# removed. Built-in application definitions are not handled by this script.
+rm -rf -- "$runtime" "$legacy_source_dir" "$app_definition_dir"
 EOF_REMOVE
 
     chmod 0755 "${dir}/remove.sh"
@@ -803,4 +812,6 @@ main() {
     echo "Custom application created but not added to the installation selection."
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
