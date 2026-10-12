@@ -385,3 +385,12 @@ fedora-server/
 ├── README.md
 └── README-EXTENDING.md
 ```
+
+## Public access and dynamic DNS
+
+Public domain mode keeps internet exposure opt-in per application. The machine-local selection is stored in `/etc/fedora-server-setup/public-access.env`, not in tracked application definitions, so two Fedora servers can use the same repository with different exposure choices. Applications not selected for public access remain available to the configured LAN/VPN ranges, while the public Nginx listener denies other clients.
+
+Public applications have their configured primary domain, canonical domain, and aliases reconciled through one GoDaddy DDNS updater. The updater checks A and AAAA records every five minutes. It creates or updates a single matching record, leaves ambiguous multi-record names unchanged, and refuses to create A/AAAA records where a CNAME already exists. It leaves existing AAAA records unchanged when no globally routable IPv6 address is detected. Disabling public access does not delete DNS records automatically; it removes those domains from future DDNS updates and blocks non-LAN/VPN clients at Nginx.
+
+Each public domain must match a configured GoDaddy DNS zone in `/etc/fedora-server-setup/godaddy-zones.conf`. In public mode, Cockpit and Proxmox are restricted to the configured LAN/VPN CIDRs. The default list covers common private IPv4 networks, loopback, and IPv6 ULA; review it if your VPN uses another range. Router TCP 80/443 forwarding remains a separate configuration step. Public-mode Nginx listeners include IPv6 as well as IPv4; IPv6 also requires the router/firewall to permit inbound TCP 80/443 to the server, because IPv6 commonly does not use IPv4-style NAT port forwarding.
+

@@ -19,6 +19,7 @@ PROXMOX_RECONFIGURE="${PROXMOX_RECONFIGURE:-false}"
 NETWORK_RECONFIGURE="${NETWORK_RECONFIGURE:-false}"
 APP_RECONFIGURE="${APP_RECONFIGURE:-false}"
 GODADDY_RECONFIGURE="${GODADDY_RECONFIGURE:-false}"
+PUBLIC_ACCESS_RECONFIGURE="${PUBLIC_ACCESS_RECONFIGURE:-false}"
 
 RUNTIME_SOURCE_DIR="/opt/fedora-server-sources"
 UPDATE_SCRIPT="/usr/local/sbin/update-app.sh"
@@ -493,11 +494,15 @@ show_plan() {
     [[ "$GODADDY_RECONFIGURE" == true ]] &&
         echo "  - GoDaddy PAT"
 
+    [[ "${PUBLIC_ACCESS_RECONFIGURE:-false}" == true ]] &&
+        echo "  - Public access and DDNS"
+
     if [[ "$DOMAIN_RECONFIGURE" != true &&
           "$PROXMOX_RECONFIGURE" != true &&
           "$NETWORK_RECONFIGURE" != true &&
           "$APP_RECONFIGURE" != true &&
-          "$GODADDY_RECONFIGURE" != true ]]; then
+          "$GODADDY_RECONFIGURE" != true &&
+          "${PUBLIC_ACCESS_RECONFIGURE:-false}" != true ]]; then
         echo "  - none"
     fi
 
@@ -545,6 +550,9 @@ run_installation() {
     local app_id
 
     check_updates_first
+
+    configure_public_access_interactive "$selected" "${PUBLIC_ACCESS_RECONFIGURE:-false}"
+    PUBLIC_ACCESS_RECONFIGURE=false
 
     export RECONFIGURE
     export DOMAIN_RECONFIGURE
@@ -629,6 +637,7 @@ settings_selection_menu() {
     APP_RECONFIGURE=false
     GODADDY_RECONFIGURE=false
     GODADDY_ZONES_RECONFIGURE=false
+    PUBLIC_ACCESS_RECONFIGURE=false
 
     echo
     echo "========================================"
@@ -644,11 +653,12 @@ settings_selection_menu() {
     echo "  4) Application selection"
     echo "  5) GoDaddy PAT"
     echo "  6) GoDaddy DNS zones"
-    echo "  7) All settings"
-    echo "  8) Cancel"
+    echo "  7) Public access and DDNS"
+    echo "  8) All settings"
+    echo "  9) Cancel"
     echo
 
-    read -r -p "Choose one option [1-8]: " choice
+    read -r -p "Choose one option [1-9]: " choice
 
     case "$choice" in
         1) DOMAIN_RECONFIGURE=true ;;
@@ -657,15 +667,17 @@ settings_selection_menu() {
         4) APP_RECONFIGURE=true ;;
         5) GODADDY_RECONFIGURE=true ;;
         6) GODADDY_ZONES_RECONFIGURE=true ;;
-        7)
+        7) PUBLIC_ACCESS_RECONFIGURE=true ;;
+        8)
             DOMAIN_RECONFIGURE=true
             PROXMOX_RECONFIGURE=true
             NETWORK_RECONFIGURE=true
             APP_RECONFIGURE=true
             GODADDY_RECONFIGURE=true
             GODADDY_ZONES_RECONFIGURE=true
+            PUBLIC_ACCESS_RECONFIGURE=true
             ;;
-        8) return 1 ;;
+        9) return 1 ;;
         *) die "Invalid settings selection: $choice" ;;
     esac
 
@@ -1620,6 +1632,7 @@ remove_application() {
     rm -rf "$runtime"
 
     app_nginx_remove "$app_id"
+    remove_public_app "$app_id"
 
     new_selection=""
 
@@ -1742,10 +1755,14 @@ remove_server_package() {
     systemctl disable --now fedora-server-certbot-renew.timer \
         2>/dev/null ||
         true
+    systemctl disable --now fedora-server-ddns.timer 2>/dev/null || true
 
     rm -f \
         /etc/systemd/system/fedora-server-certbot-renew.service \
-        /etc/systemd/system/fedora-server-certbot-renew.timer
+        /etc/systemd/system/fedora-server-certbot-renew.timer \
+        /etc/systemd/system/fedora-server-ddns.service \
+        /etc/systemd/system/fedora-server-ddns.timer \
+        "${STACK_DIR}/ddns-update.sh"
 
     systemctl daemon-reload
 
@@ -1786,7 +1803,9 @@ remove_server_package() {
         "${STATE_DIR}/domain-previous.env" \
         "$SELECTION_FILE" \
         "$GODADDY_CREDENTIALS" \
-        "$INSTALL_STATE"
+        "$INSTALL_STATE" \
+        "${STATE_DIR}/public-access.env"
+    rm -rf "${STATE_DIR}/ddns.d"
 
     nginx -t >/dev/null 2>&1 &&
         systemctl reload nginx ||

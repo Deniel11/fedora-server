@@ -22,6 +22,16 @@ valid_ipv4 "$PROXMOX_IP" ||
 install -d -m 0755 "$NGINX_RUNTIME_DIR"
 install -d -m 0755 /etc/cockpit
 
+load_public_access_state
+access_rules=""
+ipv6_http_listener=""
+ipv6_https_listener=""
+if [[ "$DOMAIN_MODE" == "public" ]]; then
+    access_rules="$(public_access_nginx_rules)"
+    ipv6_http_listener="listen [::]:80;"
+    ipv6_https_listener="listen [::]:443 ssl;"
+fi
+
 sed \
     -e "s|__FEDORA_DOMAIN__|${FEDORA_DOMAIN}|g" \
     "${REPO_ROOT}/config/cockpit.conf" \
@@ -37,6 +47,9 @@ proxmox_key="$(infra_certificate_key_path proxmox PROXMOX_DOMAIN)"
 
 sed \
     -e "s|__FEDORA_DOMAIN__|${FEDORA_DOMAIN}|g" \
+    -e "s|__ACCESS_RULES__|${access_rules}|g" \
+    -e "s|__IPV6_HTTP_LISTENER__|${ipv6_http_listener}|g" \
+    -e "s|__IPV6_HTTPS_LISTENER__|${ipv6_https_listener}|g" \
     -e "s|__FEDORA_PORT__|${FEDORA_PORT}|g" \
     -e "s|__FEDORA_CERTIFICATE__|${fedora_cert}|g" \
     -e "s|__FEDORA_CERTIFICATE_KEY__|${fedora_key}|g" \
@@ -45,6 +58,9 @@ sed \
 
 sed \
     -e "s|__PROXMOX_DOMAIN__|${PROXMOX_DOMAIN}|g" \
+    -e "s|__ACCESS_RULES__|${access_rules}|g" \
+    -e "s|__IPV6_HTTP_LISTENER__|${ipv6_http_listener}|g" \
+    -e "s|__IPV6_HTTPS_LISTENER__|${ipv6_https_listener}|g" \
     -e "s|__PROXMOX_IP__|${PROXMOX_IP}|g" \
     -e "s|__PROXMOX_PORT__|${PROXMOX_PORT}|g" \
     -e "s|__PROXMOX_CERTIFICATE__|${proxmox_cert}|g" \
@@ -192,6 +208,43 @@ else
     rm -f \
         /etc/systemd/system/fedora-server-certbot-renew.service \
         /etc/systemd/system/fedora-server-certbot-renew.timer
+    systemctl daemon-reload
+fi
+
+sync_public_ddns_state
+
+if [[ "$DOMAIN_MODE" == "public" && -s "$GODADDY_CREDENTIALS" ]] &&
+   find "$PUBLIC_DDNS_DIR" -maxdepth 1 -type f -name '*.conf' -print -quit | grep -q .; then
+    install -m 0750 "${REPO_ROOT}/scripts/ddns-update.sh" "${STACK_DIR}/ddns-update.sh"
+    cat > /etc/systemd/system/fedora-server-ddns.service <<EOF_DDNS_SERVICE
+[Unit]
+Description=Update public application DNS records through GoDaddy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${STACK_DIR}/ddns-update.sh
+EOF_DDNS_SERVICE
+    cat > /etc/systemd/system/fedora-server-ddns.timer <<'EOF_DDNS_TIMER'
+[Unit]
+Description=Refresh public application DNS records every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF_DDNS_TIMER
+    systemctl daemon-reload
+    systemctl enable --now fedora-server-ddns.timer
+    systemctl start fedora-server-ddns.service || warn "Initial DDNS update failed; the timer will retry."
+else
+    systemctl disable --now fedora-server-ddns.timer 2>/dev/null || true
+    rm -f /etc/systemd/system/fedora-server-ddns.service /etc/systemd/system/fedora-server-ddns.timer "${STACK_DIR}/ddns-update.sh"
     systemctl daemon-reload
 fi
 

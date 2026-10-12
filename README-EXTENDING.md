@@ -76,7 +76,7 @@ APP_CERTIFICATE_ENABLED="true"
 
 The central certificate stage automatically creates/renews the certificate for `APP_DOMAIN`.
 
-In local mode the repository-generated CA is used. In public mode Let's Encrypt ACME HTTP-01 is used.
+In local mode the repository-generated CA is used. In public mode the shared wildcard certificate is validated through the GoDaddy DNS-01 API. Public access is controlled separately by the machine-local list in `/etc/fedora-server-setup/public-access.env`.
 
 The application module must not generate its own certificate.
 

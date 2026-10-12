@@ -14,6 +14,7 @@ STACK_DIR="/opt/fedora-server-setup"
 RUNTIME_APP_DIR="/opt/fedora-server-apps"
 NGINX_RUNTIME_DIR="/etc/nginx/conf.d"
 ACME_WEBROOT="/var/www/fedora-server-acme"
+source "${REPO_ROOT}/scripts/public-access.sh"
 
 log()  { printf '\n[INFO] %s\n' "$*"; }
 warn() { printf '\n[WARN] %s\n' "$*" >&2; }
@@ -749,6 +750,7 @@ app_nginx_install() {
     local cert=""
     local key=""
     local source_root
+    local restricted_conf public_conf
 
     source_conf="$(app_dir "$app_id")/nginx.conf"
     runtime_conf="${NGINX_RUNTIME_DIR}/${app_id}.conf"
@@ -792,6 +794,37 @@ app_nginx_install() {
         -e "s|__APP_SOURCE_ROOT__|${source_root}|g" \
         -e "s|__APP_TLS_ENABLED__|${APP_CERTIFICATE_ENABLED:-true}|g" \
         "$source_conf" > "$runtime_conf"
+
+    if [[ "${DOMAIN_MODE:-local}" == "public" ]]; then
+        load_public_access_state
+        if is_public_app "$app_id"; then
+            public_conf="$(mktemp "${NGINX_RUNTIME_DIR}/.${app_id}.XXXXXX")"
+            awk '
+                { lines[NR] = $0 }
+                {
+                    if (index($0, "listen [::]:80;")) has_http6 = 1
+                    if (index($0, "listen [::]:443 ssl;")) has_https6 = 1
+                }
+                END {
+                    for (i = 1; i <= NR; i++) {
+                        print lines[i]
+                        if (!has_http6 && lines[i] ~ /^[[:space:]]*listen[[:space:]]+80;/) print "    listen [::]:80;"
+                        if (!has_https6 && lines[i] ~ /^[[:space:]]*listen[[:space:]]+443[[:space:]]+ssl;/) print "    listen [::]:443 ssl;"
+                    }
+                }
+            ' "$runtime_conf" > "$public_conf"
+            chmod --reference="$runtime_conf" "$public_conf"
+            mv -f "$public_conf" "$runtime_conf"
+        else
+            restricted_conf="$(mktemp "${NGINX_RUNTIME_DIR}/.${app_id}.XXXXXX")"
+            awk -v rules="$(public_access_nginx_rules)" '
+                /^[[:space:]]*server[[:space:]]*[{]/ { print; print "    " rules; next }
+                { print }
+            ' "$runtime_conf" > "$restricted_conf"
+            chmod --reference="$runtime_conf" "$restricted_conf"
+            mv -f "$restricted_conf" "$runtime_conf"
+        fi
+    fi
 }
 
 app_nginx_remove() {

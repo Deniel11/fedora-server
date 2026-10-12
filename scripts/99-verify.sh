@@ -98,6 +98,26 @@ echo "========================================"
 echo " Addresses"
 echo "========================================"
 
+load_public_access_state
+if [[ "$DOMAIN_MODE" == "public" ]]; then
+    echo "Public Nginx and DDNS applications:"
+    if [[ -n "$PUBLIC_APPS" ]]; then
+        for public_app in $PUBLIC_APPS; do
+            if load_app_config "$public_app"; then
+                printf '  - %s: %s
+' "$APP_NAME" "$APP_DOMAIN"
+            fi
+        done
+    else
+        echo "  - none"
+    fi
+    if systemctl is-active --quiet fedora-server-ddns.timer; then
+        echo "DDNS timer     : active (every 5 minutes)"
+    else
+        echo "DDNS timer     : inactive"
+    fi
+fi
+
 echo "Proxmox        : https://${PROXMOX_DOMAIN}"
 echo "Fedora/Cockpit : https://${FEDORA_DOMAIN}"
 
