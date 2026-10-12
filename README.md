@@ -396,3 +396,10 @@ Each public domain must match a configured GoDaddy DNS zone in `/etc/fedora-serv
 ## DDNS and public-access robustness
 
 The public-access prompt considers both applications selected for the current run and applications already installed on this machine. The GoDaddy updater follows the API's one-based `page` pagination, checks CNAMEs across the complete result set, and removes temporary files on exit. If IPv4 is unavailable but a global IPv6 address is available, it skips A-record updates without treating the whole run as failed; if neither address family is available, the update run fails. Missing IPv6 remains optional and does not clear existing AAAA records. The verification output uses an escaped newline for each public application.
+
+### DNS-hook safety checks (2026-10-12)
+
+The GoDaddy DNS-01 hook removes response temporary files on exit and signals, validates the configured TXT TTL and propagation delay, and rejects malformed or ambiguous TXT record IDs before cleanup. DNS record IDs are URL-encoded before use in API paths. If multiple records match the exact ACME validation value, cleanup stops rather than deleting an arbitrary record.
+
+The hook's `GODADDY_DNS_TTL` setting must be an integer from 600 through 86400 seconds. `GODADDY_DNS_PROPAGATION_SECONDS` must be an integer from 0 through 3600 seconds. The hook's API requests still require a valid GoDaddy PAT with DNS read/update permissions.
+

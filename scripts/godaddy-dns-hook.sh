@@ -11,6 +11,18 @@ API_BASE="https://api.godaddy.com/v3/domains/zones"
 DNS_TTL="${GODADDY_DNS_TTL:-600}"
 DNS_PROPAGATION_SECONDS="${GODADDY_DNS_PROPAGATION_SECONDS:-60}"
 
+# DDNS_HARDENING_PATCH_2026_10_12
+TEMP_FILES=()
+cleanup_temp_files() {
+    local file
+    for file in "${TEMP_FILES[@]}"; do
+        [[ -n "$file" ]] && rm -f -- "$file"
+    done
+}
+trap cleanup_temp_files EXIT
+trap 'exit 1' HUP INT TERM
+
+
 die() {
     printf '\n[ERROR] %s\n' "$*" >&2
     exit 1
@@ -75,38 +87,31 @@ api_error() {
 request() {
     local method="$1"
     shift
-
-    local response_file
-    local status
-    local body
-
-    response_file="$(mktemp)"
-
-    status="$(
-        curl \
-            -sS \
-            -o "$response_file" \
-            -w '%{http_code}' \
-            --request "$method" \
-            --retry 3 \
-            --retry-delay 2 \
-            --connect-timeout 10 \
-            --max-time 30 \
+    local response_file status body
+    response_file="$(mktemp)" || die "Unable to create a temporary file for GoDaddy API response."
+    TEMP_FILES+=("$response_file")
+    if ! status="$(
+        curl -sS -o "$response_file" -w '%{http_code}' \
+            --request "$method" --retry 3 --retry-delay 2 \
+            --connect-timeout 10 --max-time 30 \
             -H "Authorization: Bearer ${GODADDY_PAT}" \
-            -H 'Accept: application/json' \
-            "$@"
-    )"
-
-    if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
-        body="$(cat "$response_file")"
-        rm -f "$response_file"
+            -H 'Accept: application/json' "$@"
+    )"; then
+        rm -f -- "$response_file"
+        die "GoDaddy API transport request failed."
+    fi
+    [[ "$status" =~ ^[0-9]{3}$ ]] || {
+        rm -f -- "$response_file"
+        die "GoDaddy API returned an invalid HTTP status."
+    }
+    if (( 10#$status < 200 || 10#$status >= 300 )); then
+        body="$(head -c 2048 "$response_file" 2>/dev/null || true)"
+        rm -f -- "$response_file"
         api_error "$status" "$body"
     fi
-
     cat "$response_file"
-    rm -f "$response_file"
+    rm -f -- "$response_file"
 }
-
 
 find_zone() {
     local domain="${1%.}"
@@ -166,33 +171,32 @@ preflight() {
 }
 
 find_record() {
-    local zone="$1"
-    local name="$2"
-    local wanted="$3"
+    local zone="$1" name="$2" wanted="$3"
     local page=1 response output record_id count encoded_name
     encoded_name="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=""))' "$name")"
-
     while (( page <= 1000 )); do
-        response="$(
-            request \
-                GET \
-                "${API_BASE}/${zone}/dns-records?type=TXT&name=${encoded_name}&page=${page}&pageSize=100"
-        )"
+        response="$(request GET "${API_BASE}/${zone}/dns-records?type=TXT&name=${encoded_name}&page=${page}&pageSize=100")"
         output="$(python3 - "$response" "$wanted" <<'PYJSON'
-import json
-import sys
+import json, re, sys
 payload = json.loads(sys.argv[1])
 if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
     raise SystemExit("GoDaddy response must be an object containing an items list")
 items = payload["items"]
 if any(not isinstance(item, dict) for item in items):
     raise SystemExit("GoDaddy DNS items must be objects")
-record_id = ""
+matches = []
 for item in items:
     if item.get("type") == "TXT" and item.get("data") == sys.argv[2]:
-        record_id = item.get("recordId", "")
-        break
-print(record_id)
+        rid = item.get("recordId")
+        if isinstance(rid, bool) or not isinstance(rid, (str, int)):
+            raise SystemExit("Matching GoDaddy TXT record has an invalid recordId")
+        rid = str(rid)
+        if not rid or not re.fullmatch(r"[A-Za-z0-9_.~-]+", rid):
+            raise SystemExit("Matching GoDaddy TXT record has an unsafe recordId")
+        matches.append(rid)
+if len(matches) > 1:
+    raise SystemExit("Multiple TXT records match this exact ACME validation; refusing ambiguous cleanup")
+print(matches[0] if matches else "")
 print(len(items))
 PYJSON
 )"
@@ -205,7 +209,6 @@ PYJSON
         (( count < 100 )) && return 0
         page=$((page + 1))
     done
-
     die "TXT DNS lookup exceeded 1000 pages for ${name}.${zone}."
 }
 
@@ -242,10 +245,11 @@ PY
 }
 
 delete_record() {
-    request \
-        DELETE \
-        "${API_BASE}/$1/dns-records/$2" \
-        >/dev/null
+    local zone="$1" record_id="$2" encoded_id
+    [[ "$record_id" =~ ^[A-Za-z0-9_.~-]+$ ]] ||
+        die "Refusing to delete a DNS record with an invalid recordId."
+    encoded_id="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=""))' "$record_id")"
+    request DELETE "${API_BASE}/${zone}/dns-records/${encoded_id}" >/dev/null
 }
 
 case "${1:-}" in
