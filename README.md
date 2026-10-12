@@ -338,6 +338,8 @@ Common checks:
 - Confirm that the service hostname resolves to the correct address for the client network.
 - Confirm that the configured app is selected or already installed, and that certificate handling is enabled for it.
 - Confirm that Nginx configuration passes `nginx -t` before investigating an application-level health check.
+- If a public alias (for example, `www.example.com`) returns `403`, check the Nginx error log and verify that the alias is listed in the intended application's `server_name`. An unmatched hostname can fall through to a different virtual host and inherit its access restrictions.
+- Keep Cockpit and Proxmox restricted to LAN/VPN ranges. Fix hostname routing in the intended application virtual host; do not solve a `403` by exposing an administration interface or removing its private-network restrictions.
 - Do not publish the PAT, private keys, or `/etc/fedora-server-setup` credential files in issue reports.
 
 ## Runtime state and secrets

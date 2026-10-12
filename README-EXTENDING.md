@@ -40,6 +40,12 @@ APP_HEALTHCHECK_URL="http://127.0.0.1:${APP_PORT}/"
 
 The domain is automatically rewritten in public-domain mode. Do not hardcode `.home.example.com` into application modules.
 
+### Canonical domains and aliases
+
+The custom-application wizard accepts a primary domain and optional aliases, such as `www.example.com`. It generates separate Nginx server blocks for aliases and redirects them to the canonical hostname. For an application module maintained in this repository, use the `__APP_CANONICAL_DOMAIN__`, `__APP_DOMAIN__`, and `__APP_DOMAIN_ALIASES__` placeholders in both HTTP and HTTPS `server_name` directives. Redirect alias requests to the canonical hostname rather than allowing them to fall through to another virtual host.
+
+Every HTTPS alias must also be covered by the certificate presented for that alias. A wildcard certificate for `*.example.com` covers `www.example.com`, but does not cover the apex `example.com`; include the exact hostnames required by the app in the certificate configuration.
+
 ## Nginx
 
 Use these placeholders in `nginx.conf`:
