@@ -25,7 +25,8 @@ cleanup_temp_files() {
     done
 }
 
-trap cleanup_temp_files EXIT HUP INT TERM
+trap cleanup_temp_files EXIT
+trap 'exit 1' HUP INT TERM
 
 [[ -s "$CREDENTIALS" ]] || {
     warn "GoDaddy credentials are missing."
@@ -87,6 +88,11 @@ fetch_records() {
     printf '{"items":[]}' > "$destination"
 
     while true; do
+        if (( page > 1000 )); then
+            warn "DNS record pagination exceeded 1000 pages for ${url}."
+            return 1
+        fi
+
         page_file="$(mktemp)"
         TEMP_FILES+=("$page_file")
         if ! api_get "${url}?${query}&page=${page}&pageSize=100" > "$page_file"; then
@@ -95,20 +101,28 @@ fetch_records() {
             return 1
         fi
 
-        count="$(python3 - "$destination" "$page_file" <<'PY'
+        if ! count="$(python3 - "$destination" "$page_file" <<'PYJSON'
 import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as stream:
     current = json.load(stream)
 with open(sys.argv[2], encoding="utf-8") as stream:
     page = json.load(stream)
-items = page.get("items", [])
+if not isinstance(page, dict) or not isinstance(page.get("items"), list):
+    raise SystemExit("GoDaddy response must be an object containing an items list")
+items = page["items"]
+if any(not isinstance(item, dict) for item in items):
+    raise SystemExit("GoDaddy DNS items must be objects")
 current.setdefault("items", []).extend(items)
 with open(sys.argv[1], "w", encoding="utf-8") as stream:
     json.dump(current, stream)
 print(len(items))
-PY
-)"
+PYJSON
+)"; then
+            warn "Invalid DNS response returned by GoDaddy for ${url}."
+            rm -f -- "$page_file"
+            return 1
+        fi
         rm -f -- "$page_file"
 
         (( count < 100 )) && break

@@ -4,6 +4,23 @@ PUBLIC_ACCESS_STATE="${STATE_DIR}/public-access.env"
 PUBLIC_DDNS_DIR="${STATE_DIR}/ddns.d"
 PUBLIC_DEFAULT_CIDRS=("127.0.0.1/32" "::1/128" "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "fc00::/7")
 
+publish_public_ddns_state() {
+    local staged_dir="$1"
+    local backup_dir="${PUBLIC_DDNS_DIR}.old.$$"
+    rm -rf -- "$backup_dir"
+    if [[ -e "$PUBLIC_DDNS_DIR" ]]; then
+        mv -- "$PUBLIC_DDNS_DIR" "$backup_dir" || die "Unable to back up existing DDNS state."
+    fi
+    if mv -- "$staged_dir" "$PUBLIC_DDNS_DIR"; then
+        rm -rf -- "$backup_dir"
+        return 0
+    fi
+    if [[ -e "$backup_dir" ]]; then
+        mv -- "$backup_dir" "$PUBLIC_DDNS_DIR" || die "Unable to restore previous DDNS state."
+    fi
+    die "Unable to publish generated DDNS state."
+}
+
 load_public_access_state() {
     unset PUBLIC_APPS PUBLIC_ACCESS_CONFIGURED_APPS LOCAL_CIDRS
     PUBLIC_APPS=""
@@ -156,14 +173,19 @@ sync_public_ddns_state() {
     local -A seen=()
 
     load_public_access_state
-    rm -rf "$PUBLIC_DDNS_DIR"
-    install -d -m 0700 "$PUBLIC_DDNS_DIR"
+    local staged_dir="${PUBLIC_DDNS_DIR}.new.$$"
+    rm -rf -- "$staged_dir"
+    install -d -m 0700 "$staged_dir"
 
     if [[ "${DOMAIN_MODE:-local}" != "public" || -z "${PUBLIC_APPS:-}" ]]; then
+        publish_public_ddns_state "$staged_dir"
         return 0
     fi
 
-    [[ -s "${STATE_DIR}/godaddy-zones.conf" ]] || die "Public apps require configured GoDaddy DNS zones."
+    [[ -s "${STATE_DIR}/godaddy-zones.conf" ]] || {
+        rm -rf -- "$staged_dir"
+        die "Public apps require configured GoDaddy DNS zones."
+    }
     unset GODADDY_DNS_ZONES
     source "${STATE_DIR}/godaddy-zones.conf"
     configured_zones=("${GODADDY_DNS_ZONES[@]}")
@@ -203,8 +225,10 @@ sync_public_ddns_state() {
             printf 'DDNS_ZONES=(\n'
             printf '    %q\n' "${zones[@]}"
             printf ')\n'
-        } > "${PUBLIC_DDNS_DIR}/${app_id}.conf"
-        chown root:root "${PUBLIC_DDNS_DIR}/${app_id}.conf"
-        chmod 600 "${PUBLIC_DDNS_DIR}/${app_id}.conf"
+        } > "${staged_dir}/${app_id}.conf"
+        chown root:root "${staged_dir}/${app_id}.conf"
+        chmod 600 "${staged_dir}/${app_id}.conf"
     done
+
+    publish_public_ddns_state "$staged_dir"
 }

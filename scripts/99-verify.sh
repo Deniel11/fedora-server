@@ -61,6 +61,30 @@ else
     printf '[WARN] Cockpit socket is not active\n'
 fi
 
+if [[ "${DOMAIN_MODE:-local}" == "public" ]]; then
+    if ip -j -6 addr show scope global 2>/dev/null | python3 -c '
+import ipaddress
+import json
+import sys
+try:
+    interfaces = json.load(sys.stdin)
+    addresses = [
+        ipaddress.ip_address(item["local"])
+        for interface in interfaces
+        for item in interface.get("addr_info", [])
+        if item.get("family") == "inet6" and item.get("local")
+    ]
+    raise SystemExit(0 if any(address.is_global for address in addresses) else 1)
+except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+    raise SystemExit(1)
+'; then
+        printf '[ OK ] Globally routable IPv6 address detected\n'
+    else
+        printf '[WARN] No globally routable IPv6 address detected; AAAA DDNS updates may be skipped\n'
+    fi
+    printf '[WARN] Confirm IPv6 firewall/routing for inbound TCP 80/443 separately from IPv4 forwarding\n'
+fi
+
 for app_id in $(app_ids); do
     app_is_installed "$app_id" || continue
 

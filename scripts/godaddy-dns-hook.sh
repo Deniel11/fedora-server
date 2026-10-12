@@ -169,23 +169,44 @@ find_record() {
     local zone="$1"
     local name="$2"
     local wanted="$3"
-    local response
+    local page=1 response output record_id count encoded_name
+    encoded_name="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=""))' "$name")"
 
-    response="$(
-        request \
-            GET \
-            "${API_BASE}/${zone}/dns-records?type=TXT&name=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=""))' "$name")&page=1&pageSize=100"
-    )"
-
-    python3 - "$response" "$wanted" <<'PY'
+    while (( page <= 1000 )); do
+        response="$(
+            request \
+                GET \
+                "${API_BASE}/${zone}/dns-records?type=TXT&name=${encoded_name}&page=${page}&pageSize=100"
+        )"
+        output="$(python3 - "$response" "$wanted" <<'PYJSON'
 import json
 import sys
-
-for item in json.loads(sys.argv[1]).get("items", []):
+payload = json.loads(sys.argv[1])
+if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+    raise SystemExit("GoDaddy response must be an object containing an items list")
+items = payload["items"]
+if any(not isinstance(item, dict) for item in items):
+    raise SystemExit("GoDaddy DNS items must be objects")
+record_id = ""
+for item in items:
     if item.get("type") == "TXT" and item.get("data") == sys.argv[2]:
-        print(item.get("recordId", ""))
+        record_id = item.get("recordId", "")
         break
-PY
+print(record_id)
+print(len(items))
+PYJSON
+)"
+        record_id="$(printf '%s\n' "$output" | head -n 1)"
+        count="$(printf '%s\n' "$output" | tail -n 1)"
+        if [[ -n "$record_id" ]]; then
+            printf '%s\n' "$record_id"
+            return 0
+        fi
+        (( count < 100 )) && return 0
+        page=$((page + 1))
+    done
+
+    die "TXT DNS lookup exceeded 1000 pages for ${name}.${zone}."
 }
 
 add_record() {
