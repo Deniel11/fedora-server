@@ -1163,10 +1163,18 @@ EOF_REMOVE
 
 update_one_source() {
     local app_id="$1"
-    local url ref archive destination
+    local url ref archive runtime
+    local extract_dir staging pending pending_new archive_file
+    local root found
+    local -a entries=()
 
     load_app_config "$app_id" || {
         warn "Application is disabled: $app_id"
+        return 1
+    }
+
+    [[ "${APP_TYPE:-}" == "custom" ]] || {
+        warn "Source-only update is for custom applications only: $app_id"
         return 1
     }
 
@@ -1174,29 +1182,113 @@ update_one_source() {
     ref="${APP_SOURCE_REF:-}"
 
     if [[ -z "$url" || -z "$ref" ]]; then
-        warn "$app_id is not configured for source-only updates."
+        warn "$app_id has no source URL or ref."
         return 1
     fi
 
+    runtime="$(app_runtime_dir "$app_id")"
     archive="${url%/}/archive/${ref}.tar.gz"
-    destination="${RUNTIME_SOURCE_DIR}/${app_id}"
 
-    install -d -m 0750 "$destination"
+    extract_dir="${runtime}/source-update-extract"
+    staging="${runtime}/source-update-staging"
+    pending="${runtime}/source-pending"
+    pending_new="${runtime}/source-pending.new"
+    archive_file="${runtime}/source-update.tar.gz"
 
-    if ! curl -fLsS --retry 2 --connect-timeout 15 --max-time 60 \
-        "$archive" -o "${destination}/source-update.tar.gz"; then
-        warn "Could not download the source archive for $app_id."
+    install -d -m 0750 "$runtime"
+    rm -rf -- "$extract_dir" "$staging" "$pending_new"
+    mkdir -p "$extract_dir"
+
+    echo
+    echo "Updating source: ${APP_NAME} (${app_id})"
+    echo "Archive: ${archive}"
+
+    if ! curl \
+        --fail \
+        --silent \
+        --show-error \
+        --location \
+        --retry 2 \
+        --connect-timeout 15 \
+        --max-time 300 \
+        "$archive" \
+        -o "$archive_file"; then
+        rm -f "$archive_file"
+        rm -rf -- "$extract_dir"
+        warn "Source download failed for ${app_id}."
         return 1
     fi
 
-    if ! tar -tzf "${destination}/source-update.tar.gz" >/dev/null; then
-        warn "The downloaded archive for $app_id is invalid."
-        rm -f "${destination}/source-update.tar.gz"
+    if ! tar -tzf "$archive_file" >/dev/null; then
+        rm -f "$archive_file"
+        rm -rf -- "$extract_dir"
+        warn "Invalid source archive for ${app_id}."
         return 1
     fi
 
-    log "Source archive staged for $app_id at ${destination}/source-update.tar.gz"
-    log "The running application was not deployed, restarted, or changed."
+    if ! tar -xzf "$archive_file" -C "$extract_dir"; then
+        rm -f "$archive_file"
+        rm -rf -- "$extract_dir"
+        warn "Could not extract source archive for ${app_id}."
+        return 1
+    fi
+
+    rm -f "$archive_file"
+
+    while IFS= read -r -d '' root; do
+        entries+=("$root")
+    done < <(
+        find "$extract_dir" -mindepth 1 -maxdepth 1 -print0
+    )
+
+    mkdir -p "$staging"
+
+    if ((${#entries[@]} == 1)) && [[ -d "${entries[0]}" ]]; then
+        cp -a "${entries[0]}/." "$staging/"
+    else
+        cp -a "${extract_dir}/." "$staging/"
+    fi
+
+    rm -rf -- "$extract_dir"
+
+    case "${APP_DEPLOY_TYPE:-}" in
+        dockerfile)
+            if [[ ! -f "${staging}/Dockerfile" ]]; then
+                found="$(
+                    find "$staging" -type f -name Dockerfile -print -quit
+                )"
+
+                rm -rf -- "$staging"
+
+                if [[ -n "$found" ]]; then
+                    warn "Dockerfile for ${app_id} is nested: ${found}"
+                    warn "The current generated installer expects Dockerfile at the repository root."
+                else
+                    warn "No root Dockerfile was found in the downloaded source for ${app_id}."
+                fi
+
+                return 1
+            fi
+            ;;
+        compose)
+            if [[ ! -f "${staging}/${APP_SOURCE_COMPOSE}" ]]; then
+                rm -rf -- "$staging"
+                warn "Compose file not found: ${APP_SOURCE_COMPOSE}"
+                return 1
+            fi
+            ;;
+    esac
+
+    mv "$staging" "$pending_new"
+    rm -rf -- "$pending"
+    mv "$pending_new" "$pending"
+
+    printf '%s\n' "$ref" > "${runtime}/pending-ref"
+    chmod 640 "${runtime}/pending-ref"
+
+    log "Updated source staged at ${pending}."
+    log "The running application was not rebuilt or restarted."
+    log "Run the normal installation/update action to activate this source."
 }
 
 
