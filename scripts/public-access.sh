@@ -61,9 +61,9 @@ PY
 configure_public_access_interactive() {
     local selected="$1"
     local force="${2:-false}"
-    local app_id answer cidr_input
+    local app_id answer cidr_input candidate
     local configured public kept item
-    local -a new_cidrs=()
+    local -a new_cidrs=() candidates=()
 
     load_public_access_state
     configured="${PUBLIC_ACCESS_CONFIGURED_APPS:-}"
@@ -83,7 +83,13 @@ configure_public_access_interactive() {
     echo "Unselected applications remain local/VPN-only."
     echo
 
-    for app_id in $selected; do
+    for candidate in $(app_ids); do
+        if [[ " ${selected} " == *" ${candidate} "* ]] || app_is_installed "$candidate"; then
+            candidates+=("$candidate")
+        fi
+    done
+
+    for app_id in "${candidates[@]}"; do
         [[ -n "$app_id" ]] || continue
         load_app_config "$app_id" || continue
         [[ "${APP_NGINX_ENABLED:-true}" == "true" ]] || continue

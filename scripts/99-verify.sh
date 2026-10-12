@@ -104,8 +104,7 @@ if [[ "$DOMAIN_MODE" == "public" ]]; then
     if [[ -n "$PUBLIC_APPS" ]]; then
         for public_app in $PUBLIC_APPS; do
             if load_app_config "$public_app"; then
-                printf '  - %s: %s
-' "$APP_NAME" "$APP_DOMAIN"
+                printf '  - %s: %s\n' "$APP_NAME" "$APP_DOMAIN"
             fi
         done
     else

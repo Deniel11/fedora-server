@@ -16,6 +16,17 @@ warn() {
     log "WARN: $*" >&2
 }
 
+TEMP_FILES=()
+
+cleanup_temp_files() {
+    local file
+    for file in "${TEMP_FILES[@]}"; do
+        [[ -n "$file" ]] && rm -f -- "$file"
+    done
+}
+
+trap cleanup_temp_files EXIT HUP INT TERM
+
 [[ -s "$CREDENTIALS" ]] || {
     warn "GoDaddy credentials are missing."
     exit 1
@@ -67,6 +78,44 @@ api_get() {
         -H "Accept: application/json" "$1"
 }
 
+fetch_records() {
+    local url="$1"
+    local query="$2"
+    local destination="$3"
+    local page=1 page_file count
+
+    printf '{"items":[]}' > "$destination"
+
+    while true; do
+        page_file="$(mktemp)"
+        TEMP_FILES+=("$page_file")
+        if ! api_get "${url}?${query}&page=${page}&pageSize=100" > "$page_file"; then
+            warn "Unable to read DNS records from ${url}."
+            rm -f -- "$page_file"
+            return 1
+        fi
+
+        count="$(python3 - "$destination" "$page_file" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    current = json.load(stream)
+with open(sys.argv[2], encoding="utf-8") as stream:
+    page = json.load(stream)
+items = page.get("items", [])
+current.setdefault("items", []).extend(items)
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump(current, stream)
+print(len(items))
+PY
+)"
+        rm -f -- "$page_file"
+
+        (( count < 100 )) && break
+        page=$((page + 1))
+    done
+}
+
 record_summary() {
     python3 - "$1" "$2" <<'PY'
 import json
@@ -112,10 +161,11 @@ reconcile_record() {
     [[ -n "$address" ]] || return 0
     all_file="$(mktemp)"
     type_file="$(mktemp)"
+    TEMP_FILES+=("$all_file" "$type_file")
     url="${API_ROOT}/${zone}/dns-records"
     encoded_name="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$name")"
 
-    if ! api_get "${url}?name=${encoded_name}&pageSize=100" > "$all_file"; then
+    if ! fetch_records "$url" "name=${encoded_name}" "$all_file"; then
         warn "Unable to read DNS records for ${name}.${zone}."
         rm -f "$all_file" "$type_file"
         return 1
@@ -127,7 +177,7 @@ reconcile_record() {
         return 0
     fi
 
-    if ! api_get "${url}?type=${type}&name=${encoded_name}&pageSize=100" > "$type_file"; then
+    if ! fetch_records "$url" "type=${type}&name=${encoded_name}" "$type_file"; then
         warn "Unable to read ${type} records for ${name}.${zone}."
         rm -f "$all_file" "$type_file"
         return 1
@@ -204,7 +254,8 @@ for file in "${files[@]}"; do
         if [[ -n "$ipv4" ]]; then
             reconcile_record "$zone" "$name" A "$ipv4" || failures=$((failures + 1))
         else
-            failures=$((failures + 1))
+            warn "Skipping A update for ${domain}; no public IPv4 address is available."
+            [[ -n "$ipv6" ]] || failures=$((failures + 1))
         fi
         if [[ -n "$ipv6" ]]; then
             reconcile_record "$zone" "$name" AAAA "$ipv6" || failures=$((failures + 1))
