@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 PUBLIC_ACCESS_STATE="${STATE_DIR}/public-access.env"
+GODADDY_DDNS_STATE="${STATE_DIR}/godaddy-ddns.env"
 PUBLIC_DDNS_DIR="${STATE_DIR}/ddns.d"
 PUBLIC_DEFAULT_CIDRS=("127.0.0.1/32" "::1/128" "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "fc00::/7")
 
@@ -45,6 +46,63 @@ save_public_access_state() {
     } > "$PUBLIC_ACCESS_STATE"
     chown root:root "$PUBLIC_ACCESS_STATE"
     chmod 600 "$PUBLIC_ACCESS_STATE"
+}
+
+load_godaddy_ddns_state() {
+    unset GODADDY_DDNS_ENABLED
+    # Automatic DDNS is opt-in, so the server does not probe the public IP by default.
+    GODADDY_DDNS_ENABLED="false"
+    if [[ -f "$GODADDY_DDNS_STATE" ]]; then
+        source "$GODADDY_DDNS_STATE"
+    fi
+    GODADDY_DDNS_ENABLED="${GODADDY_DDNS_ENABLED:-false}"
+
+    case "$GODADDY_DDNS_ENABLED" in
+        true|false) ;;
+        *) die "Invalid GODADDY_DDNS_ENABLED value in ${GODADDY_DDNS_STATE}. Use true or false." ;;
+    esac
+}
+
+save_godaddy_ddns_state() {
+    install -d -m 0750 "$STATE_DIR"
+    printf 'GODADDY_DDNS_ENABLED=%q\n' "$GODADDY_DDNS_ENABLED" > "$GODADDY_DDNS_STATE"
+    chown root:root "$GODADDY_DDNS_STATE"
+    chmod 600 "$GODADDY_DDNS_STATE"
+}
+
+configure_godaddy_ddns_interactive() {
+    local answer default
+
+    load_godaddy_ddns_state
+    echo
+    echo "========================================"
+    echo " GoDaddy automatic DDNS updates"
+    echo "========================================"
+    echo "This controls automatic A/AAAA record updates from this server."
+    echo "It does not change public Nginx access, certificate issuance/renewal, or existing DNS records."
+    echo
+
+    if [[ "$GODADDY_DDNS_ENABLED" == "true" ]]; then
+        read -r -p "Enable automatic GoDaddy DDNS updates? [Y/n]: " answer
+        default="Y"
+    else
+        read -r -p "Enable automatic GoDaddy DDNS updates? [y/N]: " answer
+        default="N"
+    fi
+    answer="${answer:-$default}"
+
+    case "$answer" in
+        [Yy]*) GODADDY_DDNS_ENABLED="true" ;;
+        [Nn]*) GODADDY_DDNS_ENABLED="false" ;;
+        *) die "Please answer yes or no." ;;
+    esac
+
+    save_godaddy_ddns_state
+    if [[ "$GODADDY_DDNS_ENABLED" == "true" ]]; then
+        echo "Automatic GoDaddy DDNS updates are enabled."
+    else
+        echo "Automatic GoDaddy DDNS updates are disabled. Existing DNS records will be left unchanged."
+    fi
 }
 
 is_public_app() {
@@ -96,7 +154,8 @@ configure_public_access_interactive() {
     echo " Public access and dynamic DNS"
     echo "========================================"
     echo
-    echo "Only applications enabled here receive public Nginx access and GoDaddy DDNS updates."
+    echo "Only applications enabled here receive public Nginx access."
+    echo "Automatic GoDaddy DDNS updates are controlled by a separate setting."
     echo "Unselected applications remain local/VPN-only."
     echo
 
@@ -115,7 +174,7 @@ configure_public_access_interactive() {
         fi
 
         printf '\nApplication: %s\nDomain: %s\n' "$APP_NAME" "${APP_DOMAIN}"
-        read -r -p "Allow public internet access and enable DDNS for this application? [y/N]: " answer
+        read -r -p "Allow public internet access for this application? [y/N]: " answer
         if [[ "$answer" =~ ^[Yy]$ ]]; then
             [[ " ${public} " == *" ${app_id} "* ]] || public+="${public:+ }${app_id}"
         else
@@ -176,6 +235,13 @@ sync_public_ddns_state() {
     local staged_dir="${PUBLIC_DDNS_DIR}.new.$$"
     rm -rf -- "$staged_dir"
     install -d -m 0700 "$staged_dir"
+
+    load_godaddy_ddns_state
+    if [[ "$GODADDY_DDNS_ENABLED" != "true" ]]; then
+        # No app-domain checks or public-IP lookups are needed when DDNS is disabled.
+        publish_public_ddns_state "$staged_dir"
+        return 0
+    fi
 
     if [[ "${DOMAIN_MODE:-local}" != "public" || -z "${PUBLIC_APPS:-}" ]]; then
         publish_public_ddns_state "$staged_dir"

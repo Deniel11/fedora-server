@@ -212,8 +212,9 @@ else
 fi
 
 sync_public_ddns_state
+load_godaddy_ddns_state
 
-if [[ "$DOMAIN_MODE" == "public" && -s "$GODADDY_CREDENTIALS" ]] &&
+if [[ "$GODADDY_DDNS_ENABLED" == "true" && "$DOMAIN_MODE" == "public" && -s "$GODADDY_CREDENTIALS" ]] &&
    find "$PUBLIC_DDNS_DIR" -maxdepth 1 -type f -name '*.conf' -print -quit | grep -q .; then
     install -m 0750 "${REPO_ROOT}/scripts/ddns-update.sh" "${STACK_DIR}/ddns-update.sh"
     cat > /etc/systemd/system/fedora-server-ddns.service <<EOF_DDNS_SERVICE
@@ -244,6 +245,7 @@ EOF_DDNS_TIMER
     systemctl start fedora-server-ddns.service || warn "Initial DDNS update failed; the timer will retry."
 else
     systemctl disable --now fedora-server-ddns.timer 2>/dev/null || true
+    systemctl stop fedora-server-ddns.service 2>/dev/null || true
     rm -f /etc/systemd/system/fedora-server-ddns.service /etc/systemd/system/fedora-server-ddns.timer "${STACK_DIR}/ddns-update.sh"
     systemctl daemon-reload
 fi

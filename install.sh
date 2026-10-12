@@ -19,6 +19,7 @@ PROXMOX_RECONFIGURE="${PROXMOX_RECONFIGURE:-false}"
 NETWORK_RECONFIGURE="${NETWORK_RECONFIGURE:-false}"
 APP_RECONFIGURE="${APP_RECONFIGURE:-false}"
 GODADDY_RECONFIGURE="${GODADDY_RECONFIGURE:-false}"
+DDNS_RECONFIGURE="${DDNS_RECONFIGURE:-false}"
 PUBLIC_ACCESS_RECONFIGURE="${PUBLIC_ACCESS_RECONFIGURE:-false}"
 
 RUNTIME_SOURCE_DIR="/opt/fedora-server-sources"
@@ -494,14 +495,18 @@ show_plan() {
     [[ "$GODADDY_RECONFIGURE" == true ]] &&
         echo "  - GoDaddy PAT"
 
+    [[ "${DDNS_RECONFIGURE:-false}" == true ]] &&
+        echo "  - GoDaddy automatic DDNS updates"
+
     [[ "${PUBLIC_ACCESS_RECONFIGURE:-false}" == true ]] &&
-        echo "  - Public access and DDNS"
+        echo "  - Public access per application"
 
     if [[ "$DOMAIN_RECONFIGURE" != true &&
           "$PROXMOX_RECONFIGURE" != true &&
           "$NETWORK_RECONFIGURE" != true &&
           "$APP_RECONFIGURE" != true &&
           "$GODADDY_RECONFIGURE" != true &&
+          "${DDNS_RECONFIGURE:-false}" != true &&
           "${PUBLIC_ACCESS_RECONFIGURE:-false}" != true ]]; then
         echo "  - none"
     fi
@@ -552,7 +557,11 @@ run_installation() {
     check_updates_first
 
     configure_public_access_interactive "$selected" "${PUBLIC_ACCESS_RECONFIGURE:-false}"
+    if [[ "$DOMAIN_MODE" == "public" && ! -f "$GODADDY_DDNS_STATE" ]]; then
+        configure_godaddy_ddns_interactive
+    fi
     PUBLIC_ACCESS_RECONFIGURE=false
+    DDNS_RECONFIGURE=false
 
     export RECONFIGURE
     export DOMAIN_RECONFIGURE
@@ -636,6 +645,7 @@ settings_selection_menu() {
     NETWORK_RECONFIGURE=false
     APP_RECONFIGURE=false
     GODADDY_RECONFIGURE=false
+    DDNS_RECONFIGURE=false
     GODADDY_ZONES_RECONFIGURE=false
     PUBLIC_ACCESS_RECONFIGURE=false
 
@@ -653,12 +663,13 @@ settings_selection_menu() {
     echo "  4) Application selection"
     echo "  5) GoDaddy PAT"
     echo "  6) GoDaddy DNS zones"
-    echo "  7) Public access and DDNS"
-    echo "  8) All settings"
-    echo "  9) Cancel"
+    echo "  7) Public access per application"
+    echo "  8) GoDaddy automatic DDNS updates"
+    echo "  9) All settings"
+    echo " 10) Cancel"
     echo
 
-    read -r -p "Choose one option [1-9]: " choice
+    read -r -p "Choose one option [1-10]: " choice
 
     case "$choice" in
         1) DOMAIN_RECONFIGURE=true ;;
@@ -668,7 +679,8 @@ settings_selection_menu() {
         5) GODADDY_RECONFIGURE=true ;;
         6) GODADDY_ZONES_RECONFIGURE=true ;;
         7) PUBLIC_ACCESS_RECONFIGURE=true ;;
-        8)
+        8) DDNS_RECONFIGURE=true ;;
+        9)
             DOMAIN_RECONFIGURE=true
             PROXMOX_RECONFIGURE=true
             NETWORK_RECONFIGURE=true
@@ -676,8 +688,9 @@ settings_selection_menu() {
             GODADDY_RECONFIGURE=true
             GODADDY_ZONES_RECONFIGURE=true
             PUBLIC_ACCESS_RECONFIGURE=true
+            DDNS_RECONFIGURE=true
             ;;
-        9) return 1 ;;
+        10) return 1 ;;
         *) die "Invalid settings selection: $choice" ;;
     esac
 
@@ -1524,6 +1537,10 @@ modify_settings() {
         return
     fi
 
+    if [[ "${DDNS_RECONFIGURE:-false}" == true ]]; then
+        configure_godaddy_ddns_interactive
+    fi
+
     load_domain_state
 
     if [[ "${GODADDY_ZONES_RECONFIGURE:-false}" == true ]]; then
@@ -1804,7 +1821,8 @@ remove_server_package() {
         "$SELECTION_FILE" \
         "$GODADDY_CREDENTIALS" \
         "$INSTALL_STATE" \
-        "${STATE_DIR}/public-access.env"
+        "${STATE_DIR}/public-access.env" \
+        "$GODADDY_DDNS_STATE"
     rm -rf "${STATE_DIR}/ddns.d"
 
     nginx -t >/dev/null 2>&1 &&
