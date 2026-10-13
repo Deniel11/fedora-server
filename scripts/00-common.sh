@@ -295,6 +295,49 @@ app_runtime_dir() {
     printf '%s/%s' "$RUNTIME_APP_DIR" "$1"
 }
 
+
+app_prepare_static_content() {
+    local app_id="$1"
+    local runtime
+    local web_root
+    local rule
+
+    runtime="$(app_runtime_dir "$app_id")"
+    web_root="${runtime}/www"
+
+    [[ -d "$web_root" ]] ||
+        die "Static application document root is missing: ${web_root}"
+
+    chmod o+x "$RUNTIME_APP_DIR" "$runtime"
+    find "$web_root" -type d -exec chmod 0755 {} +
+    find "$web_root" -type f -exec chmod 0644 {} +
+
+    if command -v getenforce >/dev/null 2>&1 &&
+       [[ "$(getenforce)" != "Disabled" ]]; then
+        if ! command -v semanage >/dev/null 2>&1; then
+            dnf install -y policycoreutils-python-utils
+        fi
+
+        for rule in \
+            "/opt/fedora-server-apps" \
+            "/opt/fedora-server-apps/${app_id}" \
+            "/opt/fedora-server-apps/${app_id}/www(/.*)?"
+        do
+            if semanage fcontext -l -C |
+                awk -v path="$rule" '$1 == path { found=1 } END { exit !found }'
+            then
+                semanage fcontext -m -t httpd_sys_content_t "$rule"
+            else
+                semanage fcontext -a -t httpd_sys_content_t "$rule"
+            fi
+        done
+
+        restorecon -v "$RUNTIME_APP_DIR" "$runtime"
+        restorecon -RF "$web_root"
+    fi
+}
+
+
 app_compose_file() {
     printf '%s/compose.yml' "$(app_runtime_dir "$1")"
 }

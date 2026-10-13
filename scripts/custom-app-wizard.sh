@@ -527,6 +527,8 @@ case "$APP_DEPLOY_TYPE" in
 
         [[ -s "${runtime}/www/index.html" ]] ||
             die "Static application index.html is missing or empty."
+
+        app_prepare_static_content "$APP_ID"
         ;;
     compose)
         [[ -f "${source_dir}/${APP_SOURCE_COMPOSE}" ]] ||
