@@ -447,6 +447,15 @@ EOF_NGINX
 
 write_app_config() {
     local dir="$1"
+    local healthcheck_url=""
+
+    if [[ "$APP_DEPLOY_TYPE" != "static" ]]; then
+        if [[ "$APP_TLS_MODE" == "none" ]]; then
+            healthcheck_url="http://127.0.0.1:${APP_PORT}/"
+        else
+            healthcheck_url="https://127.0.0.1:${APP_PORT}/"
+        fi
+    fi
 
     cat > "${dir}/app.conf" <<EOF_CONF
 APP_ID=$(printf '%q' "$APP_ID")
@@ -470,7 +479,7 @@ APP_CONTAINER=$(printf '%q' "$APP_ID")
 APP_TLS_NAME=$(printf '%q' "$APP_ID")
 APP_NGINX_ENABLED="true"
 APP_CERTIFICATE_ENABLED=$([[ "$APP_TLS_MODE" == "none" ]] && printf 'false' || printf 'true')
-APP_HEALTHCHECK_URL=$(printf '%q' "$([[ "$APP_TLS_MODE" == "none" ]] && printf 'http' || printf 'https')://127.0.0.1:${APP_PORT}/")
+APP_HEALTHCHECK_URL=$(printf '%q' "$healthcheck_url")
 EOF_CONF
 }
 
@@ -509,9 +518,15 @@ fi
 case "$APP_DEPLOY_TYPE" in
     static)
         rm -f "${runtime}/compose.yml" "${runtime}/compose.override.yml"
-        install -d -m 0755 "${runtime}/public"
-        rm -rf "${runtime}/public"/*
-        cp -a "${source_dir}/." "${runtime}/public/"
+        [[ -f "${source_dir}/index.html" ]] ||
+            die "Static application source does not contain index.html."
+
+        rm -rf "${runtime}/www"
+        install -d -m 0755 "${runtime}/www"
+        cp -a "${source_dir}/." "${runtime}/www/"
+
+        [[ -s "${runtime}/www/index.html" ]] ||
+            die "Static application index.html is missing or empty."
         ;;
     compose)
         [[ -f "${source_dir}/${APP_SOURCE_COMPOSE}" ]] ||
@@ -592,8 +607,11 @@ runtime="$(app_runtime_dir "$APP_ID")"
 
 case "$APP_DEPLOY_TYPE" in
     static)
-        [[ -f "${runtime}/public/index.html" ]] ||
-            die "Static application content is missing."
+        [[ -d "${runtime}/www" ]] ||
+            die "Static application document root is missing."
+
+        [[ -s "${runtime}/www/index.html" ]] ||
+            die "Static application index.html is missing or empty."
         ;;
     compose|dockerfile)
         app_is_running "$APP_ID" ||
@@ -603,6 +621,11 @@ case "$APP_DEPLOY_TYPE" in
         die "Unsupported deployment type: ${APP_DEPLOY_TYPE}"
         ;;
 esac
+
+if [[ "$APP_DEPLOY_TYPE" == "static" ]]; then
+    nginx -t ||
+        die "Nginx configuration validation failed."
+fi
 
 log "Application ${APP_NAME} verification passed."
 EOF_VERIFY
