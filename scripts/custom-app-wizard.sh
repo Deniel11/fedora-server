@@ -321,6 +321,9 @@ choose_tls() {
 choose_domain() {
     local domain
     local aliases
+    local add_www
+    local www_alias
+    local alias
 
     echo
     read -r -p "Primary application domain: " domain
@@ -329,6 +332,20 @@ choose_domain() {
         wizard_die "Invalid application domain."
 
     read -r -p "Additional aliases separated by spaces, or leave empty: " aliases
+
+    if [[ "$domain" != www.* ]]; then
+        echo
+        read -r -p "Add www.${domain} as an alias? [Y/n]: " add_www
+        add_www="${add_www:-Y}"
+
+        if [[ "$add_www" =~ ^[Yy]$ ]]; then
+            www_alias="www.${domain}"
+
+            if [[ " ${aliases} " != *" ${www_alias} "* ]]; then
+                aliases="${aliases:+${aliases} }${www_alias}"
+            fi
+        fi
+    fi
 
     for alias in $aliases; do
         valid_hostname "$alias" ||
