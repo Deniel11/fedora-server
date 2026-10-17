@@ -308,7 +308,7 @@ app_prepare_static_content() {
     [[ -d "$web_root" ]] ||
         die "Static application document root is missing: ${web_root}"
 
-    chmod o+x "$RUNTIME_APP_DIR" "$runtime"
+    chmod 0755 "$RUNTIME_APP_DIR" "$runtime" "$web_root"
     find "$web_root" -type d -exec chmod 0755 {} +
     find "$web_root" -type f -exec chmod 0644 {} +
 
