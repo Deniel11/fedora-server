@@ -668,6 +668,13 @@ install_app() {
         chmod +x "$(app_dir "$app_id")/install.sh"
 
     bash "$(app_dir "$app_id")/install.sh"
+
+    if load_app_config "$app_id"; then
+        if [[ "${APP_TYPE:-}" == "custom" &&
+              "${APP_DEPLOY_TYPE:-}" == "static" ]]; then
+            app_prepare_static_content "$app_id"
+        fi
+    fi
 }
 
 verify_app() {
