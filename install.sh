@@ -1832,6 +1832,97 @@ remove_server_package() {
     echo "Managed server package removal completed."
 }
 
+
+delete_certificate() {
+    local certbot=""
+    local cert_name
+    local answer
+    local referenced_configs
+    local cert_names=()
+    local found=false
+
+    if [[ -x "${STACK_DIR}/certbot-venv/bin/certbot" ]]; then
+        certbot="${STACK_DIR}/certbot-venv/bin/certbot"
+    elif command -v certbot >/dev/null 2>&1; then
+        certbot="$(command -v certbot)"
+    else
+        die "Certbot is not installed."
+    fi
+
+    echo
+    echo "========================================"
+    echo " Delete a Certbot certificate"
+    echo "========================================"
+    echo
+    echo "Available certificates:"
+    echo
+
+    "$certbot" certificates || die "Unable to list Certbot certificates."
+
+    mapfile -t cert_names < <(
+        "$certbot" certificates 2>/dev/null |
+            awk -F': ' '/Certificate Name:/ {print $2}'
+    )
+
+    if ((${#cert_names[@]} == 0)); then
+        echo "No Certbot certificates were found."
+        return 0
+    fi
+
+    echo
+    read -r -p "Certificate name to delete (or Cancel): " cert_name
+
+    case "$cert_name" in
+        Cancel|cancel|CANCEL|"")
+            echo "Certificate deletion cancelled."
+            return 0
+            ;;
+    esac
+
+    for name in "${cert_names[@]}"; do
+        if [[ "$name" == "$cert_name" ]]; then
+            found=true
+            break
+        fi
+    done
+
+    [[ "$found" == true ]] ||
+        die "Certificate not found: ${cert_name}"
+
+    referenced_configs="$(
+        grep -RIlF \
+            "/etc/letsencrypt/live/${cert_name}/" \
+            /etc/nginx 2>/dev/null || true
+    )"
+
+    if [[ -n "$referenced_configs" ]]; then
+        echo
+        echo "WARNING: These Nginx configuration files reference this certificate:"
+        printf '%s\n' "$referenced_configs"
+        echo
+        echo "Deleting it may break HTTPS until a replacement is issued."
+        echo "Do not reload Nginx until the replacement certificate exists."
+    fi
+
+    echo
+    read -r -p \
+        "Type the exact certificate name '${cert_name}' to confirm deletion: " \
+        answer
+
+    [[ "$answer" == "$cert_name" ]] || {
+        echo "Certificate deletion cancelled."
+        return 0
+    }
+
+    "$certbot" delete --cert-name "$cert_name" ||
+        die "Certbot could not delete certificate: ${cert_name}"
+
+    echo
+    echo "Certificate deleted: ${cert_name}"
+    echo "Issue or restore the replacement certificate before reloading Nginx."
+}
+
+
 interactive_menu() {
     local action
     local answer
@@ -1871,10 +1962,11 @@ interactive_menu() {
     echo "  5) Update application source only"
     echo "  6) Remove one application"
     echo "  7) Remove the complete managed server package"
-    echo "  8) Exit without changes"
+    echo "  8) Delete a Certbot certificate"
+    echo "  9) Exit without changes"
     echo
 
-    read -r -p "Choose one action [1-8]: " action
+    read -r -p "Choose one action [1-9]: " action
 
     case "$action" in
         1) update_installed ;;
@@ -1884,7 +1976,8 @@ interactive_menu() {
         5) update_source_only ;;
         6) remove_application ;;
         7) remove_server_package ;;
-        8) echo "No changes made." ;;
+        8) delete_certificate ;;
+        9) echo "No changes made." ;;
         *) die "Invalid menu selection: $action" ;;
     esac
 }
