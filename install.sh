@@ -856,6 +856,21 @@ create_custom_app() {
     valid_hostname "$domain" || die "Invalid application domain."
 
     read -r -p "Additional domain aliases, space-separated (optional): " aliases
+
+    if [[ "$domain" != www.* ]]; then
+        echo
+        read -r -p "Add www.${domain} as an alias? [Y/n]: " add_www
+        add_www="${add_www:-Y}"
+
+        if [[ "$add_www" =~ ^[Yy]$ ]]; then
+            www_alias="www.${domain}"
+
+            if [[ " ${aliases} " != *" ${www_alias} "* ]]; then
+                aliases="${aliases:+${aliases} }${www_alias}"
+            fi
+        fi
+    fi
+
     read -r -p "Canonical domain [$domain]: " canonical
     canonical="${canonical:-$domain}"
     valid_hostname "$canonical" || die "Invalid canonical domain."
