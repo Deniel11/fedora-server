@@ -14,5 +14,5 @@ exec tail -n +1 -F /var/log/nginx/*access*.log |
         --real-time-html \
         --ws-url="wss://${APP_DOMAIN}/ws" \
         --addr=0.0.0.0 \
-        --port=7890 \
+        --port=443 \
         -o /report/index.html

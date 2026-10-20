@@ -1,6 +1,6 @@
 services:
   goaccess:
-    image: allinurl/goaccess:1.9.4
+    image: allinurl/goaccess:1.12
     container_name: goaccess-processor
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
