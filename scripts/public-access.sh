@@ -169,6 +169,16 @@ configure_public_access_interactive() {
         [[ -n "$app_id" ]] || continue
         load_app_config "$app_id" || continue
         [[ "${APP_NGINX_ENABLED:-true}" == "true" ]] || continue
+        if [[ "${APP_PUBLIC_ACCESS_ALLOWED:-true}" == "false" ]]; then
+            kept=""
+            for item in $public; do
+                [[ "$item" == "$app_id" ]] && continue
+                kept+="${kept:+ }${item}"
+            done
+            public="$kept"
+            [[ " ${configured} " == *" ${app_id} "* ]] || configured+="${configured:+ }${app_id}"
+            continue
+        fi
         if [[ "$force" != true && " ${configured} " == *" ${app_id} "* ]]; then
             continue
         fi

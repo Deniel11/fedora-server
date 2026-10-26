@@ -57,6 +57,7 @@ load_domain_state() {
             VAULTWARDEN_DOMAIN="vault.${prefix}.${BASE_DOMAIN}"
             JOPLIN_DOMAIN="joplin.${prefix}.${BASE_DOMAIN}"
             FORGEJO_DOMAIN="forgejo.${prefix}.${BASE_DOMAIN}"
+            GRAFANA_DOMAIN="grafana.${prefix}.${BASE_DOMAIN}"
         else
             FEDORA_DOMAIN="fedora-server.${BASE_DOMAIN}"
             PROXMOX_DOMAIN="proxmox.${BASE_DOMAIN}"
@@ -64,6 +65,7 @@ load_domain_state() {
             VAULTWARDEN_DOMAIN="vault.${BASE_DOMAIN}"
             JOPLIN_DOMAIN="joplin.${BASE_DOMAIN}"
             FORGEJO_DOMAIN="forgejo.${BASE_DOMAIN}"
+            GRAFANA_DOMAIN="grafana.${BASE_DOMAIN}"
         fi
     fi
 }
@@ -349,6 +351,10 @@ load_app_config() {
     unset \
         APP_ID \
         APP_NAME \
+        APP_DESCRIPTION \
+        APP_PUBLIC_ACCESS_ALLOWED \
+        APP_CONFIG_EXTRA_SIGNATURE \
+        APP_DATA_DIR \
         APP_TYPE \
         APP_ENABLED \
         APP_SOURCE_TYPE \
@@ -542,7 +548,7 @@ app_prepare_runtime() {
 }
 
 app_config_signature() {
-    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
         "${APP_DOMAIN}" \
         "${APP_PORT}" \
         "${APP_EXTRA_PORTS:-}" \
@@ -552,7 +558,9 @@ app_config_signature() {
         "${APP_DEPLOY_TYPE:-}" \
         "${APP_TLS_MODE:-}" \
         "${APP_CANONICAL_DOMAIN:-}" \
-        "${APP_DOMAIN_ALIASES:-}"
+        "${APP_DOMAIN_ALIASES:-}" \
+        "${APP_CONFIG_EXTRA_SIGNATURE:-}" \
+        "${APP_PUBLIC_ACCESS_ALLOWED:-true}"
 }
 
 app_is_current() {
@@ -845,9 +853,9 @@ app_nginx_install() {
         -e "s|__APP_TLS_ENABLED__|${APP_CERTIFICATE_ENABLED:-true}|g" \
         "$source_conf" > "$runtime_conf"
 
-    if [[ "${DOMAIN_MODE:-local}" == "public" ]]; then
+    if [[ "${DOMAIN_MODE:-local}" == "public" || "${APP_PUBLIC_ACCESS_ALLOWED:-true}" == "false" ]]; then
         load_public_access_state
-        if is_public_app "$app_id"; then
+        if [[ "${APP_PUBLIC_ACCESS_ALLOWED:-true}" == "true" ]] && is_public_app "$app_id"; then
             public_conf="$(mktemp "${NGINX_RUNTIME_DIR}/.${app_id}.XXXXXX")"
             awk '
                 { lines[NR] = $0 }
