@@ -48,6 +48,8 @@ services:
     volumes:
       - ${GRAFANA_DATA_DIR}:/var/lib/grafana:Z
       - ./provisioning/datasources/loki.yml:/etc/grafana/provisioning/datasources/loki.yml:ro,Z
+      - ./provisioning/dashboards/provider.yml:/etc/grafana/provisioning/dashboards/provider.yml:ro,Z
+      - ./provisioning/dashboards/nginx-analytics.json:/etc/grafana/provisioning/dashboards/nginx-analytics.json:ro,Z
     depends_on:
       loki:
         condition: service_started

@@ -29,3 +29,11 @@ From Git Bash, at the root of your local clone:
 5. Test `sudo ./install.sh --list` first and inspect that the app domain is correct before installing or reconfiguring.
 
 This is a source-code fix, not a DNS management change. It does not create, delete, or alter DNS records. Test on the Fedora host before relying on it in production.
+
+## Nginx Analytics dashboard
+
+The Loki + Grafana module now provisions an editable `Nginx Analytics` dashboard automatically. It includes request rate, approximate active client IPs, transferred data rate, HTTP status-code trends, total requests, and total transferred bytes for the selected time range.
+
+The dashboard parses the standard Nginx combined access-log format. If your Nginx `log_format` differs, update the LogQL `pattern` expressions in `apps/loki-grafana/provisioning/dashboards/nginx-analytics.json`. Visitor counts are approximate unique client IPs, not a cookie-based unique-human count; reverse proxies and NAT can affect this metric.
+
+To apply the dashboard to an existing installation, apply the source changes locally, then re-run the app installer/reconfiguration according to the repository's normal workflow. The installer copies the dashboard provisioning files to the app runtime directory; restart/recreate Grafana for provisioning to be loaded. Back up the repository and review `git diff` before applying.

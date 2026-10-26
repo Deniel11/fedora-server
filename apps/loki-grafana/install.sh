@@ -26,6 +26,9 @@ install -m 0644 "$(app_dir loki-grafana)/loki-config.yml" "${runtime}/loki-confi
 install -m 0644 "$(app_dir loki-grafana)/config.alloy" "${runtime}/config.alloy"
 install -d -m 0750 "${runtime}/provisioning/datasources"
 install -m 0644 "$(app_dir loki-grafana)/provisioning/datasources/loki.yml" "${runtime}/provisioning/datasources/loki.yml"
+install -d -m 0750 "${runtime}/provisioning/dashboards"
+install -m 0644 "$(app_dir loki-grafana)/provisioning/dashboards/provider.yml" "${runtime}/provisioning/dashboards/provider.yml"
+install -m 0644 "$(app_dir loki-grafana)/provisioning/dashboards/nginx-analytics.json" "${runtime}/provisioning/dashboards/nginx-analytics.json"
 
 if [[ -f "$env_file" ]]; then
     source "$env_file"
