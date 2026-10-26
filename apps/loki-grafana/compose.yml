@@ -50,6 +50,7 @@ services:
       - ./provisioning/datasources/loki.yml:/etc/grafana/provisioning/datasources/loki.yml:ro,Z
       - ./provisioning/dashboards/provider.yml:/etc/grafana/provisioning/dashboards/provider.yml:ro,Z
       - ./provisioning/dashboards/nginx-analytics.json:/etc/grafana/provisioning/dashboards/nginx-analytics.json:ro,Z
+      - ./provisioning/dashboards/nginx-visitor-analytics.json:/etc/grafana/provisioning/dashboards/nginx-visitor-analytics.json:ro,Z
     depends_on:
       loki:
         condition: service_started

@@ -37,3 +37,11 @@ The Loki + Grafana module now provisions an editable `Nginx Analytics` dashboard
 The dashboard parses the standard Nginx combined access-log format. If your Nginx `log_format` differs, update the LogQL `pattern` expressions in `apps/loki-grafana/provisioning/dashboards/nginx-analytics.json`. Visitor counts are approximate unique client IPs, not a cookie-based unique-human count; reverse proxies and NAT can affect this metric.
 
 To apply the dashboard to an existing installation, apply the source changes locally, then re-run the app installer/reconfiguration according to the repository's normal workflow. The installer copies the dashboard provisioning files to the app runtime directory; restart/recreate Grafana for provisioning to be loaded. Back up the repository and review `git diff` before applying.
+
+## Nginx Visitor Analytics dashboard
+
+The module also provisions a separate `Nginx Visitor Analytics` dashboard. It includes top client IPs, most requested URI paths, request trends by IP and URL, recent detailed access-log entries, HTTP methods, referrers, and user-agent strings.
+
+The queries assume the standard Nginx combined access-log format and the `job="nginx", log_type="access"` labels. Visitor counts are IP-based approximations: NAT, shared networks, reverse proxies, and bots can affect the results. If the Nginx log format differs, adjust the LogQL `pattern` expressions in `apps/loki-grafana/provisioning/dashboards/nginx-visitor-analytics.json`.
+
+Only logs ingested into Loki can be queried. The current Alloy configuration uses `tail_from_end = true`, so existing log files may not be backfilled automatically. Changing that behavior requires a deliberate review of log volume, Alloy positions, and retention before restarting collection.
