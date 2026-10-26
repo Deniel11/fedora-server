@@ -4,7 +4,7 @@ logging {
 
 local.file_match "nginx_access" {
   path_targets = [{
-    __path__ = "/var/log/nginx/*access*",
+    __path__ = "/var/log/nginx/access.log*",
     job = "nginx",
     log_type = "access",
   }]
@@ -13,7 +13,7 @@ local.file_match "nginx_access" {
 
 local.file_match "nginx_error" {
   path_targets = [{
-    __path__ = "/var/log/nginx/*error*",
+    __path__ = "/var/log/nginx/error.log*",
     job = "nginx",
     log_type = "error",
   }]
@@ -23,13 +23,13 @@ local.file_match "nginx_error" {
 loki.source.file "nginx_access" {
   targets       = local.file_match.nginx_access.targets
   forward_to    = [loki.write.default.receiver]
-  tail_from_end = true
+  tail_from_end = false
 }
 
 loki.source.file "nginx_error" {
   targets       = local.file_match.nginx_error.targets
   forward_to    = [loki.write.default.receiver]
-  tail_from_end = true
+  tail_from_end = false
 }
 
 loki.write "default" {

@@ -61,7 +61,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "topk(25, sum by (ip) (count_over_time({job=\"nginx\", log_type=\"access\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__range])))",
+          "expr": "topk(25, sum by (ip) (count_over_time({job=\"nginx\", log_type=\"access\", site=~\"$site\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__range])))",
           "queryType": "instant",
           "refId": "A"
         }
@@ -118,7 +118,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "topk(25, sum by (uri) (count_over_time({job=\"nginx\", log_type=\"access\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__range])))",
+          "expr": "topk(25, sum by (uri) (count_over_time({job=\"nginx\", log_type=\"access\", site=~\"$site\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__range])))",
           "queryType": "instant",
           "refId": "A"
         }
@@ -196,7 +196,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "sum by (ip) (count_over_time({job=\"nginx\", log_type=\"access\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__interval]))",
+          "expr": "sum by (ip) (count_over_time({job=\"nginx\", log_type=\"access\", site=~\"$site\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__interval]))",
           "queryType": "range",
           "refId": "A",
           "legendFormat": "{{ip}}"
@@ -273,7 +273,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "topk(10, sum by (uri) (count_over_time({job=\"nginx\", log_type=\"access\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__interval])))",
+          "expr": "topk(10, sum by (uri) (count_over_time({job=\"nginx\", log_type=\"access\", site=~\"$site\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__interval])))",
           "queryType": "range",
           "refId": "A",
           "legendFormat": "{{uri}}"
@@ -329,7 +329,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "{job=\"nginx\", log_type=\"access\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"`",
+          "expr": "{job=\"nginx\", log_type=\"access\", site=~\"$site\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"`",
           "queryType": "range",
           "refId": "A"
         }
@@ -383,7 +383,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "sum by (method) (count_over_time({job=\"nginx\", log_type=\"access\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__range]))",
+          "expr": "sum by (method) (count_over_time({job=\"nginx\", log_type=\"access\", site=~\"$site\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__range]))",
           "queryType": "instant",
           "refId": "A"
         }
@@ -440,7 +440,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "topk(15, sum by (referer) (count_over_time({job=\"nginx\", log_type=\"access\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__range])))",
+          "expr": "topk(15, sum by (referer) (count_over_time({job=\"nginx\", log_type=\"access\", site=~\"$site\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__range])))",
           "queryType": "instant",
           "refId": "A"
         }
@@ -497,7 +497,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "topk(10, sum by (agent) (count_over_time({job=\"nginx\", log_type=\"access\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__range])))",
+          "expr": "topk(10, sum by (agent) (count_over_time({job=\"nginx\", log_type=\"access\", site=~\"$site\"} | pattern `<ip> - <user> [<time>] \"<method> <uri> <protocol>\" <status> <bytes> \"<referer>\" \"<agent>\"` [$__range])))",
           "queryType": "instant",
           "refId": "A"
         }
@@ -527,7 +527,33 @@
     "analytics"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "All sites",
+          "value": ".+"
+        },
+        "datasource": {
+          "type": "loki",
+          "uid": "loki"
+        },
+        "definition": "label_values({job=\"nginx\", log_type=\"access\"}, site)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".+",
+        "label": "Website",
+        "multi": false,
+        "name": "site",
+        "options": [],
+        "query": "label_values({job=\"nginx\", log_type=\"access\"}, site)",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-24h",

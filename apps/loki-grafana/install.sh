@@ -30,6 +30,8 @@ install -d -m 0750 "${runtime}/provisioning/dashboards"
 install -m 0644 "$(app_dir loki-grafana)/provisioning/dashboards/provider.yml" "${runtime}/provisioning/dashboards/provider.yml"
 install -m 0644 "$(app_dir loki-grafana)/provisioning/dashboards/nginx-analytics.json" "${runtime}/provisioning/dashboards/nginx-analytics.json"
 install -m 0644 "$(app_dir loki-grafana)/provisioning/dashboards/nginx-visitor-analytics.json" "${runtime}/provisioning/dashboards/nginx-visitor-analytics.json"
+install -m 0644 "$(app_dir loki-grafana)/provisioning/dashboards/nginx-url-analytics.json" "${runtime}/provisioning/dashboards/nginx-url-analytics.json"
+install -m 0644 "$(app_dir loki-grafana)/provisioning/dashboards/nginx-security-errors.json" "${runtime}/provisioning/dashboards/nginx-security-errors.json"
 
 if [[ -f "$env_file" ]]; then
     source "$env_file"
@@ -52,6 +54,8 @@ ALLOY_DATA_DIR=${data_dir}/alloy
 EOF_ENV
 chmod 600 "$env_file"
 ln -sfn "$env_file" "${runtime}/.env"
+
+bash "$(app_dir loki-grafana)/generate-site-dashboards.sh"
 
 chown 10001:10001 "${data_dir}/loki"
 chown 472:472 "${data_dir}/grafana"
