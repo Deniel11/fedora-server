@@ -49,6 +49,8 @@ while IFS= read -r site_app_id; do
     [[ -n "$site_app_id" ]] || continue
     [[ "$site_app_id" == "loki-grafana" ]] && continue
     load_app_config "$site_app_id" || continue
+    app_is_installed "$site_app_id" || continue
+    [[ -f "${NGINX_RUNTIME_DIR}/${site_app_id}.conf" ]] || continue
     [[ "${APP_NGINX_ENABLED:-true}" == "true" ]] || continue
     [[ -f "$(app_dir "$site_app_id")/nginx.conf" ]] || continue
 
@@ -101,3 +103,10 @@ loki.write "default" {
 EOF_ERROR_END
 
 chmod 0644 "$alloy_config"
+
+if docker inspect -f '{{.State.Running}}' grafana-alloy 2>/dev/null | grep -qx true; then
+    (
+        cd "$runtime"
+        docker compose -f "${runtime}/compose.yml" restart alloy
+    )
+fi

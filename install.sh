@@ -587,6 +587,10 @@ run_installation() {
         install_app "$app_id"
     done
 
+    if app_is_installed "loki-grafana"; then
+        bash "$(app_dir loki-grafana)/generate-site-dashboards.sh"
+    fi
+
     write_install_state 99-verify false
 
     bash "${SCRIPT_DIR}/scripts/99-verify.sh"
@@ -1694,6 +1698,10 @@ remove_application() {
     nginx -t >/dev/null 2>&1 &&
         systemctl reload nginx ||
         true
+
+    if [[ "$app_id" != "loki-grafana" ]] && app_is_installed "loki-grafana"; then
+        bash "$(app_dir loki-grafana)/generate-site-dashboards.sh"
+    fi
 
     echo "${APP_NAME} has been removed."
 }

@@ -853,6 +853,20 @@ app_nginx_install() {
         -e "s|__APP_TLS_ENABLED__|${APP_CERTIFICATE_ENABLED:-true}|g" \
         "$source_conf" > "$runtime_conf"
 
+    local logging_conf
+    logging_conf="$(mktemp "${NGINX_RUNTIME_DIR}/.${app_id}.logging.XXXXXX")"
+    awk -v app_id="$app_id" '
+        /^[[:space:]]*server[[:space:]]*[{]/ {
+            print
+            printf "    access_log /var/log/nginx/%s-access.log combined;\n", app_id
+            printf "    error_log /var/log/nginx/%s-error.log warn;\n", app_id
+            next
+        }
+        { print }
+    ' "$runtime_conf" > "$logging_conf"
+    chmod --reference="$runtime_conf" "$logging_conf"
+    mv -f "$logging_conf" "$runtime_conf"
+
     if [[ "${DOMAIN_MODE:-local}" == "public" || "${APP_PUBLIC_ACCESS_ALLOWED:-true}" == "false" ]]; then
         load_public_access_state
         if [[ "${APP_PUBLIC_ACCESS_ALLOWED:-true}" == "true" ]] && is_public_app "$app_id"; then
