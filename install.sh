@@ -591,6 +591,10 @@ run_installation() {
         bash "$(app_dir loki-grafana)/generate-site-dashboards.sh"
     fi
 
+    if app_is_installed "goaccess" && systemctl is-enabled --quiet fedora-server-goaccess.service; then
+        systemctl restart fedora-server-goaccess.service || warn "Could not restart GoAccess after application installation."
+    fi
+
     write_install_state 99-verify false
 
     bash "${SCRIPT_DIR}/scripts/99-verify.sh"
@@ -1701,6 +1705,10 @@ remove_application() {
 
     if [[ "$app_id" != "loki-grafana" ]] && app_is_installed "loki-grafana"; then
         bash "$(app_dir loki-grafana)/generate-site-dashboards.sh"
+    fi
+
+    if [[ "$app_id" != "goaccess" ]] && app_is_installed "goaccess" && systemctl is-enabled --quiet fedora-server-goaccess.service; then
+        systemctl restart fedora-server-goaccess.service || warn "Could not restart GoAccess after application removal."
     fi
 
     echo "${APP_NAME} has been removed."

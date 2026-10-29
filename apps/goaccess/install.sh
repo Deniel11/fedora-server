@@ -25,8 +25,8 @@ GOACCESS_PORT=$(printf '%q' "$APP_PORT")
 EOF_ENV
 chmod 600 "$env_file"
 
-if [[ ! -r /var/log/nginx/access.log ]]; then
-    warn "The Nginx access log is not readable yet; the GoAccess service will wait for it."
+if ! compgen -G '/var/log/nginx/*-access.log' >/dev/null && ! compgen -G '/var/log/nginx/access.log*' >/dev/null; then
+    warn "No Nginx access logs exist yet; GoAccess will wait until an installed app receives a request."
 fi
 
 if [[ "${RECONFIGURE:-false}" != "true" ]] && app_is_installed goaccess && app_is_running goaccess && app_is_current goaccess; then
