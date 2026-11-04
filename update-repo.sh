@@ -55,6 +55,10 @@ if [[ -f "$TMP_CONFIG" ]]; then
     cp "$TMP_CONFIG" "${INSTALL_DIR}/config/domains.conf"
 fi
 
+if [[ -x "${INSTALL_DIR}/scripts/crowdsec.sh" ]]; then
+    "${INSTALL_DIR}/scripts/crowdsec.sh" --sync-runtime
+fi
+
 find "$INSTALL_DIR" -type f -name '*.sh' -exec chmod +x {} +
 
 echo

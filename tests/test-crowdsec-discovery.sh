@@ -16,18 +16,23 @@ access_log syslog:server=127.0.0.1:514;
 access_log relative/access.log;
 access_log $variable;
 EOF_INPUT
+printf '%s\n' '# access_log /var/log/nginx/commented.log combined;' >> "${TMP}/input"
 
 awk -f "$PARSER" "${TMP}/input" | sort -u > "${TMP}/actual"
 cat > "${TMP}/expected" <<'EOF_EXPECTED'
 /var/log/nginx/*-access.log
+/var/log/nginx/*/access.log
 /var/log/nginx/access.log
 /var/log/nginx/quoted access.log
-/var/log/nginx/*/access.log
 EOF_EXPECTED
 sort -u "${TMP}/expected" -o "${TMP}/expected"
 diff -u "${TMP}/expected" "${TMP}/actual"
-
 bash -n "${ROOT}/scripts/crowdsec.sh"
+grep -Fq "trap 'tx_abort' EXIT" "${ROOT}/scripts/crowdsec.sh"
+grep -Fq "CROWDSEC_LOG_TARGETS_SHA256" "${ROOT}/scripts/crowdsec.sh"
+grep -Fq "CROWDSEC_NGINX_GROUP_ADDED" "${ROOT}/scripts/crowdsec.sh"
+grep -Fq -- "--sync-runtime" "${ROOT}/update-repo.sh"
+grep -Fq "CrowdSec integration cleanup failed" "${ROOT}/install.sh"
 [[ $(grep -c 'access_log /var/log/nginx/fedora-server-access.log combined;' "${ROOT}/config/fedora-server.nginx.conf") -eq 2 ]]
 [[ $(grep -c 'access_log /var/log/nginx/proxmox-access.log combined;' "${ROOT}/config/proxmox.nginx.conf") -eq 2 ]]
 if grep -nE '^[[:space:]]*#[^!]' "${ROOT}/scripts/crowdsec.sh" "${ROOT}/scripts/crowdsec-discovery.awk"; then

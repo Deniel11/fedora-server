@@ -5,10 +5,12 @@ umask 077
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR=/etc/fedora-server-setup
 STATE_FILE="${STATE_DIR}/crowdsec-state.env"
+LOG_TARGETS="${STATE_DIR}/crowdsec-log-targets.txt"
 ACQUIS_DIR=/etc/crowdsec/acquis.d
 ACQUIS_FILE="${ACQUIS_DIR}/fedora-server-nginx.yaml"
 STACK_DIR=/opt/fedora-server-setup
 INSTALLED_SCRIPT="${STACK_DIR}/crowdsec.sh"
+INSTALLED_PARSER="${STACK_DIR}/crowdsec-discovery.awk"
 SERVICE_NAME=fedora-server-crowdsec-refresh
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 TIMER_FILE="/etc/systemd/system/${SERVICE_NAME}.timer"
@@ -19,17 +21,32 @@ SERVICE_SHA256=none
 TIMER_SHA256=none
 RUNTIME_SHA256=none
 PARSER_SHA256=none
+LOG_TARGETS_SHA256=none
 LEGACY_STATE=false
 RESTART_PENDING=false
+NGINX_GROUP_ADDED=false
+TX_DIR=
+TX_PATHS=()
+TX_EXISTED=()
+TX_GROUP_ADDED=false
 
 log() { printf '[CrowdSec] %s\n' "$*"; }
 warn() { printf '[CrowdSec] WARNING: %s\n' "$*" >&2; }
 die() { printf '[CrowdSec] ERROR: %s\n' "$*" >&2; exit 1; }
+file_hash() { sha256sum "$1" | awk '{print $1}'; }
 
-[[ $EUID -eq 0 ]] || die "Run with sudo or as root."
-[[ -r /etc/os-release ]] || die "Cannot identify the operating system."
-source /etc/os-release
-[[ ${ID:-} == fedora ]] || die "Fedora Server is required."
+require_root_fedora() {
+    [[ $EUID -eq 0 ]] || die "Run with sudo or as root."
+    [[ -r /etc/os-release ]] || die "Cannot identify the operating system."
+    source /etc/os-release
+    [[ ${ID:-} == fedora ]] || die "Fedora Server is required."
+}
+
+lock_module() {
+    install -d -m 0755 /run/lock
+    exec 9>"$LOCK_FILE"
+    flock -n 9 || die "Another CrowdSec operation is already running."
+}
 
 load_state() {
     DECISION=unset
@@ -40,6 +57,7 @@ load_state() {
     PARSER_SHA256=none
     LEGACY_STATE=false
     RESTART_PENDING=false
+    NGINX_GROUP_ADDED=false
     if [[ -e $STATE_DIR || -L $STATE_DIR ]]; then
         [[ -d $STATE_DIR && ! -L $STATE_DIR ]] || die "CrowdSec state directory must be a real directory."
         [[ $(stat -c '%U:%a' "$STATE_DIR") == root:700 ]] || die "CrowdSec state directory must be root-owned with mode 0700."
@@ -50,14 +68,17 @@ load_state() {
     local key value
     while IFS='=' read -r key value; do
         case "$key" in
-            CROWDSEC_DECISION) [[ $value =~ ^(installed|declined)$ ]] || die "Invalid CrowdSec state."; DECISION=$value ;;
+            CROWDSEC_DECISION) [[ $value =~ ^(installed|declined|removed_with_retained_files)$ ]] || die "Invalid CrowdSec state."; DECISION=$value ;;
             CROWDSEC_ACQUIS_SHA256) [[ $value =~ ^([a-f0-9]{64}|none)$ ]] || die "Invalid acquisition ownership metadata."; ACQUIS_SHA256=$value ;;
             CROWDSEC_SERVICE_SHA256) [[ $value =~ ^([a-f0-9]{64}|none)$ ]] || die "Invalid service ownership metadata."; SERVICE_SHA256=$value ;;
             CROWDSEC_TIMER_SHA256) [[ $value =~ ^([a-f0-9]{64}|none)$ ]] || die "Invalid timer ownership metadata."; TIMER_SHA256=$value ;;
             CROWDSEC_RUNTIME_SHA256) [[ $value =~ ^([a-f0-9]{64}|none)$ ]] || die "Invalid runtime ownership metadata."; RUNTIME_SHA256=$value ;;
             CROWDSEC_PARSER_SHA256) [[ $value =~ ^([a-f0-9]{64}|none)$ ]] || die "Invalid parser ownership metadata."; PARSER_SHA256=$value ;;
+            CROWDSEC_LOG_TARGETS_SHA256) [[ $value =~ ^([a-f0-9]{64}|none)$ ]] || die "Invalid log-target ownership metadata."; LOG_TARGETS_SHA256=$value ;;
+            CROWDSEC_NGINX_GROUP_ADDED) [[ $value =~ ^(true|false)$ ]] || die "Invalid group metadata."; NGINX_GROUP_ADDED=$value ;;
             CROWDSEC_LEGACY_MIGRATION) [[ $value =~ ^(true|false)$ ]] || die "Invalid migration metadata."; LEGACY_STATE=$value ;;
             CROWDSEC_RESTART_PENDING) [[ $value =~ ^(true|false)$ ]] || die "Invalid restart metadata."; RESTART_PENDING=$value ;;
+            CROWDSEC_NGINX_GROUP_ADDED) [[ $value =~ ^(true|false)$ ]] || die "Invalid group metadata."; NGINX_GROUP_ADDED=$value ;;
             CROWDSEC_MANAGED_INSTALL) [[ $value =~ ^(true|false)$ ]] || die "Invalid legacy installation metadata."; LEGACY_STATE=true ;;
             *) die "Unexpected key in CrowdSec state: $key" ;;
         esac
@@ -68,21 +89,85 @@ save_state() {
     install -d -o root -g root -m 0700 "$STATE_DIR"
     local tmp
     tmp=$(mktemp "${STATE_DIR}/.crowdsec-state.XXXXXX")
-    printf 'CROWDSEC_DECISION=%s\nCROWDSEC_ACQUIS_SHA256=%s\nCROWDSEC_SERVICE_SHA256=%s\nCROWDSEC_TIMER_SHA256=%s\nCROWDSEC_RUNTIME_SHA256=%s\nCROWDSEC_PARSER_SHA256=%s\nCROWDSEC_LEGACY_MIGRATION=%s\nCROWDSEC_RESTART_PENDING=%s\n' \
-        "$DECISION" "$ACQUIS_SHA256" "$SERVICE_SHA256" "$TIMER_SHA256" "$RUNTIME_SHA256" "$PARSER_SHA256" "$LEGACY_STATE" "$RESTART_PENDING" > "$tmp"
+    printf 'CROWDSEC_DECISION=%s\nCROWDSEC_ACQUIS_SHA256=%s\nCROWDSEC_SERVICE_SHA256=%s\nCROWDSEC_TIMER_SHA256=%s\nCROWDSEC_RUNTIME_SHA256=%s\nCROWDSEC_PARSER_SHA256=%s\nCROWDSEC_LOG_TARGETS_SHA256=%s\nCROWDSEC_LEGACY_MIGRATION=%s\nCROWDSEC_RESTART_PENDING=%s\nCROWDSEC_NGINX_GROUP_ADDED=%s\n' \
+        "$DECISION" "$ACQUIS_SHA256" "$SERVICE_SHA256" "$TIMER_SHA256" "$RUNTIME_SHA256" "$PARSER_SHA256" "$LOG_TARGETS_SHA256" "$LEGACY_STATE" "$RESTART_PENDING" "$NGINX_GROUP_ADDED" > "$tmp"
     chown root:root "$tmp"
     chmod 0600 "$tmp"
     mv -f "$tmp" "$STATE_FILE"
 }
 
-file_hash() {
-    sha256sum "$1" | awk '{print $1}'
+tx_begin() {
+    TX_DIR=$(mktemp -d /var/tmp/fedora-server-crowdsec-tx.XXXXXX)
+    TX_PATHS=()
+    TX_EXISTED=()
+    TX_GROUP_ADDED=false
+    tx_snapshot "$ACQUIS_FILE"
+    tx_snapshot "$LOG_TARGETS"
+    tx_snapshot "$STATE_FILE"
+    tx_snapshot "$INSTALLED_SCRIPT"
+    tx_snapshot "$INSTALLED_PARSER"
+    tx_snapshot "$SERVICE_FILE"
+    tx_snapshot "$TIMER_FILE"
+    TX_TIMER_ENABLED=$(systemctl is-enabled "${SERVICE_NAME}.timer" 2>/dev/null || true)
+    TX_TIMER_ACTIVE=$(systemctl is-active "${SERVICE_NAME}.timer" 2>/dev/null || true)
+    TX_CROWDSEC_ACTIVE=$(systemctl is-active crowdsec 2>/dev/null || true)
 }
 
-lock_module() {
-    install -d -m 0755 /run/lock
-    exec 9>"$LOCK_FILE"
-    flock -n 9 || die "Another CrowdSec operation is already running."
+tx_snapshot() {
+    local path="$1"
+    TX_PATHS+=("$path")
+    if [[ -e $path || -L $path ]]; then
+        [[ ! -L $path && -f $path ]] || die "Refusing to manage a non-regular path: $path"
+        TX_EXISTED+=(true)
+        local index=${#TX_PATHS[@]}
+        mkdir -p "${TX_DIR}/${index}"
+        cp -p "$path" "${TX_DIR}/${index}/file"
+    else
+        TX_EXISTED+=(false)
+    fi
+}
+
+tx_restore() {
+    local i path index
+    for ((i=${#TX_PATHS[@]}-1; i>=0; i--)); do
+        path=${TX_PATHS[$i]}
+        index=$((i+1))
+        if [[ ${TX_EXISTED[$i]} == true ]]; then
+            install -d "$(dirname "$path")"
+            cp -p "${TX_DIR}/${index}/file" "$path"
+        else
+            rm -f "$path"
+        fi
+    done
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    case "$TX_TIMER_ENABLED" in
+        enabled) systemctl enable "${SERVICE_NAME}.timer" >/dev/null 2>&1 || true ;;
+        *) systemctl disable "${SERVICE_NAME}.timer" >/dev/null 2>&1 || true ;;
+    esac
+    case "$TX_TIMER_ACTIVE" in
+        active) systemctl start "${SERVICE_NAME}.timer" >/dev/null 2>&1 || true ;;
+        *) systemctl stop "${SERVICE_NAME}.timer" >/dev/null 2>&1 || true ;;
+    esac
+    if [[ $TX_GROUP_ADDED == true ]]; then
+        gpasswd -d crowdsec nginx >/dev/null 2>&1 || true
+    fi
+    if [[ $TX_CROWDSEC_ACTIVE == active ]]; then        systemctl restart crowdsec >/dev/null 2>&1 || true
+    else
+        systemctl stop crowdsec >/dev/null 2>&1 || true
+    fi
+}
+
+tx_commit() {
+    [[ -z $TX_DIR ]] || rm -rf "$TX_DIR"
+    TX_DIR=
+}
+
+tx_abort() {
+    if [[ -n $TX_DIR && -d $TX_DIR ]]; then
+        tx_restore
+        rm -rf "$TX_DIR"
+        TX_DIR=
+    fi
 }
 
 discover_logs() {
@@ -99,6 +184,30 @@ ensure_collection() {
     fi
 }
 
+ensure_log_group_access() {
+    id crowdsec >/dev/null 2>&1 || die "The CrowdSec service account does not exist."
+    getent group nginx >/dev/null 2>&1 || die "The Nginx group does not exist; verify the Fedora Nginx package layout."
+    if ! id -nG crowdsec | tr ' ' '\n' | grep -Fxq nginx; then
+        usermod -aG nginx crowdsec || die "Could not add CrowdSec to the Nginx log-reading group."
+        NGINX_GROUP_ADDED=true
+        TX_GROUP_ADDED=true
+        RESTART_PENDING=true
+    fi
+}
+
+check_log_access() {
+    local pattern file found=false
+    while IFS= read -r pattern; do
+        [[ -n $pattern ]] || continue
+        while IFS= read -r file; do
+            [[ -n $file ]] || continue
+            found=true
+            runuser -u crowdsec -- test -r "$file" || die "CrowdSec cannot read Nginx log file: $file. Check Nginx log ownership, logrotate create mode, group membership, and SELinux AVC records."
+        done < <(compgen -G "$pattern" || true)
+    done < "$LOG_TARGETS"
+    [[ $found == true ]] || die "None of the discovered Nginx log patterns currently match a file."
+}
+
 write_acquisition() {
     command -v crowdsec >/dev/null 2>&1 || die "CrowdSec is not installed."
     command -v cscli >/dev/null 2>&1 || die "cscli is unavailable."
@@ -113,22 +222,22 @@ write_acquisition() {
         [[ $(stat -c '%U' "$ACQUIS_FILE") == root ]] || die "Acquisition file must be root-owned."
         existing_hash=$(file_hash "$ACQUIS_FILE")
         if [[ $ACQUIS_SHA256 != none ]]; then
-            [[ $existing_hash == "$ACQUIS_SHA256" ]] || die "Refusing to overwrite an acquisition file changed outside this integration: $ACQUIS_FILE"
+            [[ $existing_hash == "$ACQUIS_SHA256" ]] || die "Refusing to overwrite an acquisition file changed outside this integration."
         elif [[ $LEGACY_STATE == true ]] && grep -Fqx '# Managed by fedora-server CrowdSec module.' "$ACQUIS_FILE"; then
             ACQUIS_SHA256=$existing_hash
         else
-            die "Refusing to overwrite an acquisition file not owned by this integration: $ACQUIS_FILE"
+            die "Refusing to overwrite an acquisition file not owned by this integration."
         fi
     fi
     local foreign_file
     for foreign_file in /etc/crowdsec/acquis.yaml /etc/crowdsec/acquis.d/*.yaml; do
         [[ -f $foreign_file && $foreign_file != "$ACQUIS_FILE" ]] || continue
         if grep -Eq '^[[:space:]]*type:[[:space:]]*nginx([[:space:]]|$)' "$foreign_file"; then
-            die "Another acquisition already declares the Nginx parser: $foreign_file. Review it before enabling this integration."
+            die "Another acquisition already declares the Nginx parser: $foreign_file."
         fi
     done
     install -d -o root -g root -m 0750 "$ACQUIS_DIR"
-    local tmp backup="" path
+    local tmp path
     tmp=$(mktemp "${ACQUIS_DIR}/.fedora-server-nginx.XXXXXX")
     {
         printf 'source: file\nfilenames:\n'
@@ -143,51 +252,21 @@ write_acquisition() {
         rm -f "$tmp"
         ACQUIS_SHA256=$existing_hash
     else
-        if [[ -f $ACQUIS_FILE ]]; then
-            backup=$(mktemp "${ACQUIS_DIR}/.fedora-server-nginx-backup.XXXXXX")
-            cp -p "$ACQUIS_FILE" "$backup"
-        fi
         mv -f "$tmp" "$ACQUIS_FILE"
         chown root:root "$ACQUIS_FILE"
         chmod 0640 "$ACQUIS_FILE"
-        if ! crowdsec -t >/dev/null 2>&1; then
-            if [[ -n $backup ]]; then
-                mv -f "$backup" "$ACQUIS_FILE"
-            else
-                rm -f "$ACQUIS_FILE"
-            fi
-            die "Generated acquisition configuration failed validation; the previous file was restored."
-        fi
-        [[ -z $backup ]] || rm -f "$backup"
         ACQUIS_SHA256=$(file_hash "$ACQUIS_FILE")
         RESTART_PENDING=true
     fi
-    printf '%s\n' "${logs[@]}" > "${STATE_DIR}/crowdsec-log-targets.txt"
-    chown root:root "${STATE_DIR}/crowdsec-log-targets.txt"
-    chmod 0600 "${STATE_DIR}/crowdsec-log-targets.txt"
+    printf '%s\n' "${logs[@]}" > "$LOG_TARGETS"
+    chown root:root "$LOG_TARGETS"
+    chmod 0600 "$LOG_TARGETS"
+    LOG_TARGETS_SHA256=$(file_hash "$LOG_TARGETS")
     DECISION=installed
     save_state
-    check_log_access
 }
 
-check_log_access() {
-    local pattern file found=false
-    while IFS= read -r pattern; do
-        [[ -n $pattern ]] || continue
-        while IFS= read -r file; do
-            [[ -n $file ]] || continue
-            found=true
-            if id crowdsec >/dev/null 2>&1; then
-                runuser -u crowdsec -- test -r "$file" || die "CrowdSec cannot read Nginx log file: $file. Check group access and SELinux AVC records."
-            else
-                [[ -r $file ]] || die "Nginx log file is not readable: $file"
-            fi
-        done < <(compgen -G "$pattern" || true)
-    done < "${STATE_DIR}/crowdsec-log-targets.txt"
-    [[ $found == true ]] || die "None of the discovered Nginx log patterns currently match a file."
-}
-
-install_timer() {
+install_runtime() {
     install -d -o root -g root -m 0750 "$STACK_DIR"
     if [[ -e $INSTALLED_SCRIPT || -L $INSTALLED_SCRIPT ]]; then
         [[ -f $INSTALLED_SCRIPT && ! -L $INSTALLED_SCRIPT ]] || die "Runtime script path is not a regular file."
@@ -196,22 +275,21 @@ install_timer() {
         elif [[ $LEGACY_STATE == true ]] && grep -Fq 'MARKER="# Managed by fedora-server CrowdSec module."' "$INSTALLED_SCRIPT"; then
             RUNTIME_SHA256=$(file_hash "$INSTALLED_SCRIPT")
         else
-            die "Refusing to replace an unowned runtime script: $INSTALLED_SCRIPT"
+            die "Refusing to replace an unowned runtime script."
         fi
     fi
-    if [[ -e ${STACK_DIR}/crowdsec-discovery.awk || -L ${STACK_DIR}/crowdsec-discovery.awk ]]; then
-        [[ -f ${STACK_DIR}/crowdsec-discovery.awk && ! -L ${STACK_DIR}/crowdsec-discovery.awk && $PARSER_SHA256 != none && $(file_hash "${STACK_DIR}/crowdsec-discovery.awk") == "$PARSER_SHA256" ]] || die "Refusing to replace an unowned discovery parser."
+    if [[ -e $INSTALLED_PARSER || -L $INSTALLED_PARSER ]]; then
+        [[ -f $INSTALLED_PARSER && ! -L $INSTALLED_PARSER && $PARSER_SHA256 != none && $(file_hash "$INSTALLED_PARSER") == "$PARSER_SHA256" ]] || die "Refusing to replace an unowned discovery parser."
     fi
-    if [[ ! -f $INSTALLED_SCRIPT ]] || ! cmp -s "$SCRIPT_DIR/crowdsec.sh" "$INSTALLED_SCRIPT"; then
-        install -o root -g root -m 0750 "$SCRIPT_DIR/crowdsec.sh" "$INSTALLED_SCRIPT"
-    fi
-    if [[ ! -f ${STACK_DIR}/crowdsec-discovery.awk ]] || ! cmp -s "$SCRIPT_DIR/crowdsec-discovery.awk" "${STACK_DIR}/crowdsec-discovery.awk"; then
-        install -o root -g root -m 0644 "$SCRIPT_DIR/crowdsec-discovery.awk" "${STACK_DIR}/crowdsec-discovery.awk"
-    fi
+    install -o root -g root -m 0750 "$SCRIPT_DIR/crowdsec.sh" "$INSTALLED_SCRIPT"
+    install -o root -g root -m 0644 "$SCRIPT_DIR/crowdsec-discovery.awk" "$INSTALLED_PARSER"
     RUNTIME_SHA256=$(file_hash "$INSTALLED_SCRIPT")
-    PARSER_SHA256=$(file_hash "${STACK_DIR}/crowdsec-discovery.awk")
+    PARSER_SHA256=$(file_hash "$INSTALLED_PARSER")
     save_state
-    local service_tmp timer_tmp changed=false
+}
+
+install_units() {
+    local service_tmp timer_tmp
     service_tmp=$(mktemp)
     timer_tmp=$(mktemp)
     cat > "$service_tmp" <<EOF_SERVICE
@@ -242,68 +320,63 @@ EOF_TIMER
         [[ -f $SERVICE_FILE && ! -L $SERVICE_FILE ]] || die "Service unit path is not a regular file."
         if [[ $SERVICE_SHA256 != none ]]; then
             [[ $(file_hash "$SERVICE_FILE") == "$SERVICE_SHA256" ]] || die "Refusing to replace a service unit changed outside this integration."
-        elif [[ $LEGACY_STATE == true ]] && grep -Fqx "ExecStart=${INSTALLED_SCRIPT} --refresh" "$SERVICE_FILE" && grep -Fqx 'Description=Refresh CrowdSec Nginx log discovery' "$SERVICE_FILE"; then
+        elif [[ $LEGACY_STATE == true ]] && grep -Fqx "ExecStart=${INSTALLED_SCRIPT} --refresh" "$SERVICE_FILE"; then
             SERVICE_SHA256=$(file_hash "$SERVICE_FILE")
         else
-            die "Refusing to replace an unowned systemd service: $SERVICE_FILE"
+            die "Refusing to replace an unowned systemd service."
         fi
     fi
     if [[ -e $TIMER_FILE || -L $TIMER_FILE ]]; then
         [[ -f $TIMER_FILE && ! -L $TIMER_FILE ]] || die "Timer unit path is not a regular file."
         if [[ $TIMER_SHA256 != none ]]; then
             [[ $(file_hash "$TIMER_FILE") == "$TIMER_SHA256" ]] || die "Refusing to replace a timer unit changed outside this integration."
-        elif [[ $LEGACY_STATE == true ]] && grep -Fqx 'Description=Periodically refresh CrowdSec Nginx log discovery' "$TIMER_FILE" && grep -Fqx 'OnUnitActiveSec=5min' "$TIMER_FILE"; then
+        elif [[ $LEGACY_STATE == true ]] && grep -Fqx 'Description=Periodically refresh CrowdSec Nginx log discovery' "$TIMER_FILE"; then
             TIMER_SHA256=$(file_hash "$TIMER_FILE")
         else
-            die "Refusing to replace an unowned systemd timer: $TIMER_FILE"
+            die "Refusing to replace an unowned systemd timer."
         fi
     fi
-    if [[ ! -f $SERVICE_FILE ]] || ! cmp -s "$service_tmp" "$SERVICE_FILE"; then
-        mv -f "$service_tmp" "$SERVICE_FILE"
-        changed=true
+    if ! cmp -s "$service_tmp" "$SERVICE_FILE" 2>/dev/null; then
+        install -o root -g root -m 0644 "$service_tmp" "$SERVICE_FILE" || die "Could not install the CrowdSec refresh service."
     fi
-    if [[ ! -f $TIMER_FILE ]] || ! cmp -s "$timer_tmp" "$TIMER_FILE"; then
-        mv -f "$timer_tmp" "$TIMER_FILE"
-        changed=true
+    if ! cmp -s "$timer_tmp" "$TIMER_FILE" 2>/dev/null; then
+        install -o root -g root -m 0644 "$timer_tmp" "$TIMER_FILE" || die "Could not install the CrowdSec refresh timer."
     fi
     rm -f "$service_tmp" "$timer_tmp"
-    chown root:root "$SERVICE_FILE" "$TIMER_FILE"
-    chmod 0644 "$SERVICE_FILE" "$TIMER_FILE"
     SERVICE_SHA256=$(file_hash "$SERVICE_FILE")
     TIMER_SHA256=$(file_hash "$TIMER_FILE")
-    DECISION=installed
     save_state
-    if [[ $changed == true ]]; then
-        systemctl daemon-reload
-    fi
-    systemctl is-enabled --quiet "${SERVICE_NAME}.timer" || systemctl enable "${SERVICE_NAME}.timer"
-    systemctl is-active --quiet "${SERVICE_NAME}.timer" || systemctl start "${SERVICE_NAME}.timer"
+    systemctl daemon-reload || die "Could not reload systemd units."
+    systemctl enable --now "${SERVICE_NAME}.timer" || die "Could not enable and start the CrowdSec refresh timer."
 }
 
 configure() {
     load_state
-    install -d -o root -g root -m 0700 "$STATE_DIR"
+    tx_begin
+    trap 'tx_abort' EXIT
+    install -d -o root -g root -m 0700 "$STATE_DIR" || die "Could not create the state directory."
+    ensure_log_group_access
     write_acquisition
-    DECISION=installed
-    save_state
+    install_runtime
     ensure_collection
-    save_state
     crowdsec -t || die "CrowdSec configuration validation failed."
+    check_log_access
     if [[ $RESTART_PENDING == true ]]; then
-        systemctl restart crowdsec
+        systemctl restart crowdsec || die "CrowdSec could not restart with the updated configuration."
         RESTART_PENDING=false
         save_state
     fi
-    systemctl enable crowdsec
-    systemctl is-active --quiet crowdsec || systemctl start crowdsec
+    systemctl enable crowdsec || die "Could not enable the CrowdSec service."
+    systemctl is-active --quiet crowdsec || systemctl start crowdsec || die "Could not start CrowdSec."
     systemctl is-active --quiet crowdsec || die "CrowdSec is not active."
-    install_timer
+    install_units
     DECISION=installed
     LEGACY_STATE=false
     save_state
+    tx_commit
     log "Detection-only configuration is active. No bouncer or blocking rule was installed."
     log "Configured Nginx access log patterns:"
-    sed 's/^/  - /' "${STATE_DIR}/crowdsec-log-targets.txt"
+    sed 's/^/  - /' "$LOG_TARGETS"
 }
 
 install_crowdsec() {
@@ -318,8 +391,8 @@ install_crowdsec() {
         curl --proto '=https' --tlsv1.2 -fL --retry 2 https://install.crowdsec.net -o "$bootstrap" || die "Could not download the official CrowdSec bootstrap script."
         checksum=$(sha256sum "$bootstrap" | awk '{print $1}')
         printf 'Downloaded bootstrap: https://install.crowdsec.net\nSHA-256: %s\n' "$checksum"
-        warn "The downloaded bootstrap will execute with root privileges. The displayed hash is informational and is not independently authenticated."
-        read -r -p "Approve and execute this bootstrap, then install CrowdSec? [y/N] " answer
+        warn "The displayed hash is informational and is not independently authenticated."
+        read -r -p "Approve and execute this bootstrap with root privileges? [y/N] " answer
         if [[ ! $answer =~ ^[Yy]$ ]]; then
             rm -f "$bootstrap"
             trap - EXIT
@@ -343,6 +416,21 @@ refresh() {
     configure
 }
 
+sync_runtime() {
+    lock_module
+    load_state
+    [[ $DECISION == installed ]] || return 0
+    [[ $RUNTIME_SHA256 != none && -f $INSTALLED_SCRIPT ]] || die "CrowdSec runtime ownership metadata is incomplete."
+    [[ $(file_hash "$INSTALLED_SCRIPT") == "$RUNTIME_SHA256" ]] || die "Refusing to update a runtime script changed outside this integration."
+    [[ -f $INSTALLED_PARSER && $PARSER_SHA256 != none && $(file_hash "$INSTALLED_PARSER") == "$PARSER_SHA256" ]] || die "Refusing to update a discovery parser changed outside this integration."
+    install -o root -g root -m 0750 "$SCRIPT_DIR/crowdsec.sh" "$INSTALLED_SCRIPT"
+    install -o root -g root -m 0644 "$SCRIPT_DIR/crowdsec-discovery.awk" "$INSTALLED_PARSER"
+    RUNTIME_SHA256=$(file_hash "$INSTALLED_SCRIPT")
+    PARSER_SHA256=$(file_hash "$INSTALLED_PARSER")
+    save_state
+    log "Managed CrowdSec runtime files updated."
+}
+
 status() {
     load_state
     printf 'Integration decision: %s\n' "$DECISION"
@@ -357,9 +445,9 @@ status() {
     crowdsec -t
     cscli collections list 2>/dev/null || true
     cscli metrics 2>/dev/null || true
-    if [[ -f "$STATE_DIR/crowdsec-log-targets.txt" ]]; then
+    if [[ -f $LOG_TARGETS ]]; then
         echo 'Discovered log patterns:'
-        sed 's/^/  - /' "$STATE_DIR/crowdsec-log-targets.txt"
+        sed 's/^/  - /' "$LOG_TARGETS"
     fi
     if [[ -f $ACQUIS_FILE ]]; then
         echo 'Acquisition configuration:'
@@ -373,71 +461,92 @@ status() {
 
 remove_integration() {
     load_state
-    local acquisition_removed=false units_changed=false timer_managed=true service_managed=true
-    if [[ -f $ACQUIS_FILE ]] && {
-        [[ $ACQUIS_SHA256 != none && $(file_hash "$ACQUIS_FILE") == "$ACQUIS_SHA256" ]] || { [[ $LEGACY_STATE == true ]] && grep -Fqx '# Managed by fedora-server CrowdSec module.' "$ACQUIS_FILE"; }
-    }; then
-        rm -f "$ACQUIS_FILE"
-        acquisition_removed=true
-    elif [[ -e $ACQUIS_FILE ]]; then
-        warn "Acquisition file was changed or is not owned by this integration; it was retained."
+    local retained=false
+    if [[ -f $ACQUIS_FILE ]]; then
+        if [[ $ACQUIS_SHA256 != none && $(file_hash "$ACQUIS_FILE") == "$ACQUIS_SHA256" ]] || { [[ $LEGACY_STATE == true ]] && grep -Fqx '# Managed by fedora-server CrowdSec module.' "$ACQUIS_FILE"; }; then
+            rm -f "$ACQUIS_FILE"
+        else
+            retained=true
+            warn "Acquisition file was changed or is not owned by this integration; it was retained."
+        fi
+    elif [[ -e $ACQUIS_FILE || -L $ACQUIS_FILE ]]; then
+        retained=true
     fi
-    if [[ -f $TIMER_FILE ]] && {
-        [[ $TIMER_SHA256 != none && $(file_hash "$TIMER_FILE") == "$TIMER_SHA256" ]] || { [[ $LEGACY_STATE == true ]] && grep -Fqx 'Description=Periodically refresh CrowdSec Nginx log discovery' "$TIMER_FILE"; }
-    }; then
-        systemctl disable --now "${SERVICE_NAME}.timer" 2>/dev/null || true
-        systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
-        rm -f "$TIMER_FILE"
-        units_changed=true
-    elif [[ -e $TIMER_FILE ]]; then
-        timer_managed=false
-        warn "Refresh timer was changed or is not owned by this integration; it was retained."
+    if [[ -f $TIMER_FILE ]]; then
+        if [[ $TIMER_SHA256 != none && $(file_hash "$TIMER_FILE") == "$TIMER_SHA256" ]] || { [[ $LEGACY_STATE == true ]] && grep -Fqx 'Description=Periodically refresh CrowdSec Nginx log discovery' "$TIMER_FILE"; }; then
+            systemctl disable --now "${SERVICE_NAME}.timer" 2>/dev/null || true
+            rm -f "$TIMER_FILE"
+        else
+            retained=true
+            warn "Refresh timer was changed or is not owned by this integration; it was retained."
+        fi
+    elif [[ -e $TIMER_FILE || -L $TIMER_FILE ]]; then
+        retained=true
     fi
-    if [[ -f $SERVICE_FILE && $timer_managed == true ]] && {
-        [[ $SERVICE_SHA256 != none && $(file_hash "$SERVICE_FILE") == "$SERVICE_SHA256" ]] || { [[ $LEGACY_STATE == true ]] && grep -Fqx "ExecStart=${INSTALLED_SCRIPT} --refresh" "$SERVICE_FILE" && grep -Fqx 'Description=Refresh CrowdSec Nginx log discovery' "$SERVICE_FILE"; }
-    }; then
-        rm -f "$SERVICE_FILE"
-        units_changed=true
-    elif [[ -e $SERVICE_FILE ]]; then
-        service_managed=false
-        warn "Refresh service was changed or is not owned by this integration; it was retained."
-    elif [[ $timer_managed == false ]]; then
-        service_managed=false
+    if [[ -f $SERVICE_FILE ]]; then
+        if [[ $SERVICE_SHA256 != none && $(file_hash "$SERVICE_FILE") == "$SERVICE_SHA256" ]] || { [[ $LEGACY_STATE == true ]] && grep -Fqx "ExecStart=${INSTALLED_SCRIPT} --refresh" "$SERVICE_FILE"; }; then
+            if [[ ! -e $TIMER_FILE ]]; then
+                rm -f "$SERVICE_FILE"
+            else
+                retained=true
+            fi
+        else
+            retained=true
+            warn "Refresh service was changed or is not owned by this integration; it was retained."
+        fi
+    elif [[ -e $SERVICE_FILE || -L $SERVICE_FILE ]]; then
+        retained=true
     fi
-    if [[ -f $INSTALLED_SCRIPT && $service_managed == true ]] && {
-        [[ $RUNTIME_SHA256 != none && $(file_hash "$INSTALLED_SCRIPT") == "$RUNTIME_SHA256" ]] || { [[ $LEGACY_STATE == true ]] && grep -Fq 'MARKER="# Managed by fedora-server CrowdSec module."' "$INSTALLED_SCRIPT"; }
-    }; then
-        rm -f "$INSTALLED_SCRIPT"
-    elif [[ -e $INSTALLED_SCRIPT ]]; then
-        warn "Runtime script was changed or is not owned by this integration; it was retained."
-        service_managed=false
+    if [[ -f $INSTALLED_SCRIPT ]]; then
+        if [[ $RUNTIME_SHA256 != none && $(file_hash "$INSTALLED_SCRIPT") == "$RUNTIME_SHA256" ]] && [[ ! -e $SERVICE_FILE ]]; then
+            rm -f "$INSTALLED_SCRIPT"
+        else
+            retained=true
+            warn "Runtime script was retained because ownership could not be proven or its service still exists."
+        fi
     fi
-    if [[ -f ${STACK_DIR}/crowdsec-discovery.awk && $service_managed == true ]] && [[ $PARSER_SHA256 != none && $(file_hash "${STACK_DIR}/crowdsec-discovery.awk") == "$PARSER_SHA256" ]]; then
-        rm -f "${STACK_DIR}/crowdsec-discovery.awk"
-    elif [[ -e ${STACK_DIR}/crowdsec-discovery.awk ]]; then
-        warn "Discovery parser was changed or is not owned by this integration; it was retained."
+    if [[ -f $INSTALLED_PARSER ]]; then
+        if [[ $PARSER_SHA256 != none && $(file_hash "$INSTALLED_PARSER") == "$PARSER_SHA256" ]] && [[ ! -e $SERVICE_FILE ]]; then
+            rm -f "$INSTALLED_PARSER"
+        else
+            retained=true
+            warn "Discovery parser was retained because ownership could not be proven or its service still exists."
+        fi
     fi
-    rm -f "$STATE_DIR/crowdsec-log-targets.txt" "$STATE_FILE"
-    if [[ $units_changed == true ]]; then
-        systemctl daemon-reload
+    if [[ -f $LOG_TARGETS ]]; then
+        if [[ $LOG_TARGETS_SHA256 != none && $(file_hash "$LOG_TARGETS") == "$LOG_TARGETS_SHA256" ]]; then
+            rm -f "$LOG_TARGETS"
+        else
+            retained=true
+            warn "Log-target state was changed or is not owned by this integration; it was retained."
+        fi
     fi
-    if [[ $acquisition_removed == true ]] && command -v crowdsec >/dev/null 2>&1 && crowdsec -t; then
-        systemctl restart crowdsec || true
+    if [[ $NGINX_GROUP_ADDED == true ]] && id -nG crowdsec | tr ' ' '\n' | grep -Fxq nginx; then
+        if gpasswd -d crowdsec nginx >/dev/null 2>&1; then
+            NGINX_GROUP_ADDED=false
+        else
+            retained=true
+            warn "Could not remove the CrowdSec Nginx group membership."
+        fi
     fi
-    log "Repository integration removed. CrowdSec packages, database, credentials, collections, bouncers, and unrelated configuration were retained."
+    if [[ $retained == false ]]; then
+        rm -f "$STATE_FILE"
+    else
+        DECISION=removed_with_retained_files
+        save_state
+    fi
+    systemctl daemon-reload
+    if [[ ! -e $ACQUIS_FILE ]] && command -v crowdsec >/dev/null 2>&1 && crowdsec -t; then
+        systemctl restart crowdsec || warn "CrowdSec could not be restarted after acquisition removal."
+    fi
+    log "Repository integration cleanup finished. CrowdSec packages, databases, credentials, collections, and independent bouncers were retained."
 }
 
 offer() {
     load_state
     case "$DECISION" in
-        installed)
-            refresh
-            return 0
-            ;;
-        declined)
-            log "CrowdSec was previously declined. Use the main installer menu to enable it."
-            return 0
-            ;;
+        installed) refresh; return 0 ;;
+        declined) log "CrowdSec was previously declined. Use the main installer menu to enable it."; return 0 ;;
     esac
     cat <<'EOF_OFFER'
 Optional CrowdSec integration
@@ -470,18 +579,20 @@ menu() {
         1) lock_module; install_crowdsec ;;
         2) refresh ;;
         3) status ;;
-        4) remove_integration ;;
+        4) lock_module; remove_integration ;;
         5) return 0 ;;
         *) die 'Invalid selection.' ;;
     esac
 }
 
+require_root_fedora
 case "${1:-menu}" in
     --offer) offer ;;
     --install) lock_module; install_crowdsec ;;
     --refresh) refresh ;;
     --status) status ;;
     --remove) lock_module; remove_integration ;;
+    --sync-runtime) sync_runtime ;;
     menu) menu ;;
     *) die "Unknown CrowdSec action: ${1:-}" ;;
 esac

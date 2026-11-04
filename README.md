@@ -292,7 +292,7 @@ To update repository-managed files in a bootstrap installation:
 sudo /opt/fedora-server-setup/update-repo.sh
 ```
 
-The updater downloads the current `main` branch and preserves the existing `config/domains.conf` file across the repository-file update. Runtime state, application data, credentials, and TLS material live outside the Git repository.
+The updater downloads the current `main` branch and preserves the existing `config/domains.conf` file across the repository-file update. When the CrowdSec integration is enabled, the updater also refreshes its managed runtime script and discovery parser only if their recorded ownership hashes still match. Runtime state, application data, credentials, and TLS material live outside the Git repository.
 
 After a repository update, run the installer when required to reconcile services with the updated scripts and configuration.
 
