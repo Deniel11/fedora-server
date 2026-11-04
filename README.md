@@ -405,3 +405,19 @@ The public-access prompt considers both applications selected for the current ru
 The GoDaddy DNS-01 hook removes response temporary files on exit and on termination signals. It validates HTTP status codes, handles transport failures, and rejects malformed or ambiguous TXT record IDs before cleanup. DNS record IDs are URL-encoded before use in API paths. If multiple records match the exact ACME validation value, cleanup stops rather than deleting an arbitrary record.
 
 The `GODADDY_DNS_TTL` and `GODADDY_DNS_PROPAGATION_SECONDS` environment settings are used as supplied by the caller, with defaults of `600` and `60` seconds respectively. The current hook does not validate their numeric ranges, so leave them unset unless you have a specific reason to override them, and ensure any supplied values are sensible. The hook's API requests still require a valid GoDaddy PAT with DNS read/update permissions.
+
+## Optional CrowdSec integration
+
+CrowdSec can optionally analyze access logs from the Nginx reverse proxy
+running directly on the Fedora Server host.
+
+The integration discovers configured Nginx access log paths dynamically and
+refreshes its acquisition configuration periodically. CrowdSec is initially
+configured for detection only. No bouncer or automatic IP blocking is enabled.
+
+See [README-CROWDSEC.md](README-CROWDSEC.md) for installation, configuration,
+verification, management, and removal instructions.
+
+Run the standalone management menu with:
+
+    sudo bash scripts/crowdsec.sh

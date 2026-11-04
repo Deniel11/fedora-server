@@ -250,4 +250,10 @@ else
     systemctl daemon-reload
 fi
 
+if [[ -x "${REPO_ROOT}/scripts/crowdsec.sh" ]]; then
+    if ! bash "${REPO_ROOT}/scripts/crowdsec.sh" --offer; then
+        log "WARNING: CrowdSec setup failed; Nginx installation will continue."
+    fi
+fi
+
 log "Nginx reverse proxy is ready."
