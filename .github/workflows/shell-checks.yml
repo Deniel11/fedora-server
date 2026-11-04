@@ -1,0 +1,21 @@
+name: Shell checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Check shell syntax
+        run: find . -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+      - name: Run CrowdSec discovery tests
+        run: bash tests/test-crowdsec-discovery.sh
+      - name: Run ShellCheck
+        run: shellcheck --severity=error scripts/crowdsec.sh tests/test-crowdsec-discovery.sh
+      - name: Check whitespace
+        run: git diff --check

@@ -55,6 +55,14 @@ check "Nginx service" \
 check "Nginx configuration" \
     nginx -t
 
+if [[ -f "${STATE_DIR}/crowdsec-state.env" ]] && grep -qx 'CROWDSEC_DECISION=installed' "${STATE_DIR}/crowdsec-state.env"; then
+    check "CrowdSec service" systemctl is-active --quiet crowdsec
+    check "CrowdSec refresh timer" systemctl is-active --quiet fedora-server-crowdsec-refresh.timer
+    check "CrowdSec configuration" crowdsec -t
+    check "CrowdSec metrics" cscli metrics
+    check "CrowdSec Nginx acquisition" test -s /etc/crowdsec/acquis.d/fedora-server-nginx.yaml
+fi
+
 if systemctl is-active --quiet cockpit.socket; then
     printf '[ OK ] Cockpit socket\n'
 else

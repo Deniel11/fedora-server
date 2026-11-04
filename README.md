@@ -18,6 +18,7 @@ The installer is designed to be rerun: saved configuration and application state
 - [Verification and troubleshooting](#verification-and-troubleshooting)
 - [Runtime state and secrets](#runtime-state-and-secrets)
 - [Repository layout](#repository-layout)
+- [Optional CrowdSec integration](#optional-crowdsec-integration)
 
 ## Requirements
 
@@ -70,7 +71,9 @@ When no installation or saved state is detected, it starts the first-time setup 
 5) Update application source only
 6) Remove one application
 7) Remove the complete managed server package
-8) Exit without changes
+8) Delete a Certbot certificate
+9) Manage CrowdSec
+10) Exit without changes
 ```
 
 ### Common commands
@@ -376,6 +379,8 @@ fedora-server/
 │   ├── 03-network.sh
 │   ├── 04-docker.sh
 │   ├── 05-nginx.sh
+│   ├── crowdsec.sh
+│   ├── crowdsec-discovery.awk
 │   ├── 40-certificates.sh
 │   ├── 99-verify.sh
 │   ├── custom-app-wizard.sh
@@ -420,4 +425,6 @@ verification, management, and removal instructions.
 
 Run the standalone management menu with:
 
-    sudo bash scripts/crowdsec.sh
+    sudo ./install.sh
+
+Choose **9) Manage CrowdSec** from the existing-installation menu. The integration is detection-only and does not install a bouncer or enable automatic blocking. See [README-CROWDSEC.md](README-CROWDSEC.md) for details.

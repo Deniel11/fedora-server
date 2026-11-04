@@ -1745,6 +1745,10 @@ remove_server_package() {
         return
     fi
 
+    if [[ -x "${SCRIPT_DIR}/scripts/crowdsec.sh" ]]; then
+        bash "${SCRIPT_DIR}/scripts/crowdsec.sh" --remove || warn "CrowdSec integration cleanup reported an error."
+    fi
+
     while IFS= read -r app_id; do
         [[ -n "$app_id" ]] || continue
 
