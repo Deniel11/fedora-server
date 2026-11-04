@@ -1953,6 +1953,15 @@ delete_certificate() {
     echo "Issue or restore the replacement certificate before reloading Nginx."
 }
 
+manage_crowdsec() {
+    local crowdsec_script="${SCRIPT_DIR}/scripts/crowdsec.sh"
+
+    if [[ ! -f "$crowdsec_script" ]]; then
+        die "CrowdSec module not found: ${crowdsec_script}"
+    fi
+
+    bash "$crowdsec_script"
+}
 
 interactive_menu() {
     local action
@@ -1994,23 +2003,25 @@ interactive_menu() {
     echo "  6) Remove one application"
     echo "  7) Remove the complete managed server package"
     echo "  8) Delete a Certbot certificate"
-    echo "  9) Exit without changes"
+    echo "  9) Manage CrowdSec"
+    echo " 10) Exit without changes"
     echo
 
-    read -r -p "Choose one action [1-9]: " action
+    read -r -p "Choose one action [1-10]: " action
 
     case "$action" in
-        1) update_installed ;;
-        2) modify_settings ;;
-        3) install_application ;;
-        4) create_custom_app ;;
-        5) update_source_only ;;
-        6) remove_application ;;
-        7) remove_server_package ;;
-        8) delete_certificate ;;
-        9) echo "No changes made." ;;
-        *) die "Invalid menu selection: $action" ;;
-    esac
+       1) update_installed ;;
+       2) modify_settings ;;
+       3) install_application ;;
+       4) create_custom_app ;;
+       5) update_source_only ;;
+       6) remove_application ;;
+       7) remove_server_package ;;
+       8) delete_certificate ;;
+       9) manage_crowdsec ;;
+      10) echo "No changes made." ;;
+       *) die "Invalid menu selection: $action" ;;
+   esac
 }
 
 main() {

@@ -1,98 +1,55 @@
-# Optional CrowdSec Integration
+# Fedora Server CrowdSec integration
 
-This repository supports an optional CrowdSec Security Engine integration
-for the host-managed Nginx reverse proxy running directly on Fedora Server.
-
-## Security model
-
-The initial integration is detection-only.
-
-- CrowdSec reads configured Nginx access logs.
-- The Nginx collection provides relevant parsing and detection rules.
-- This module does not install or enable an Nginx bouncer.
-- This module does not create or change OPNsense firewall rules.
-- Automatic IP blocking is not enabled.
-
-Before enabling enforcement, validate the client IP address seen by Nginx,
-trusted reverse-proxy settings, and the consequences of false positives.
-
-## Installation
-
-During the Nginx installation stage, the installer offers CrowdSec as an
-optional component. Declining does not prevent Nginx installation. The choice
-is saved in `/etc/fedora-server-setup/crowdsec-state.env`.
-
-To install later:
+Apply from the root of your local `fedora-server` checkout:
 
 ```bash
-sudo bash scripts/crowdsec.sh --install
+cp /path/to/extracted/scripts/crowdsec.sh scripts/crowdsec.sh
+chmod 750 scripts/crowdsec.sh
+git apply /path/to/extracted/patches/install.sh.patch
+cp /path/to/extracted/README-CROWDSEC.md README-CROWDSEC.md
 ```
 
-The first installation uses the official CrowdSec repository bootstrap and
-the Fedora DNF package manager. Review the downloaded bootstrap script and
-repository trust requirements before approving installation.
+The existing `scripts/05-nginx.sh` must retain its optional `--offer` block
+after Nginx has successfully reloaded/started. That makes the one-time offer
+appear as part of the normal install/update workflow.
 
-## Dynamic Nginx log discovery
-
-The integration reads the active Nginx configuration with `nginx -T`.
-It discovers absolute file-based `access_log` targets and generates:
-
-`/etc/crowdsec/acquis.d/fedora-server-nginx.yaml`
-
-The generated file is managed by this integration. Unmanaged acquisition
-files are not overwritten.
-
-A systemd timer periodically checks the configured log paths. The generated
-acquisition configuration can also enable periodic discovery of newly created
-files, subject to the installed CrowdSec version's supported options.
-
-The discovery handles common absolute file paths. It skips `access_log off`,
-syslog targets, variables, and relative paths. Review the generated file if
-your Nginx configuration uses advanced logging syntax.
-
-## Management commands
+Normal management is now through the existing installer:
 
 ```bash
-sudo bash scripts/crowdsec.sh
-sudo bash scripts/crowdsec.sh --install
-sudo bash scripts/crowdsec.sh --refresh
-sudo bash scripts/crowdsec.sh --status
-sudo bash scripts/crowdsec.sh --remove
+sudo ./install.sh
 ```
 
-Removing the integration deletes its managed acquisition file, refresh timer,
-service, and saved decision. It does not uninstall the CrowdSec package or
-remove unrelated CrowdSec configuration.
+Choose menu option **9) CrowdSec management**. No separate CrowdSec command
+is needed for normal use.
 
-## Verification
+The management submenu can install/configure, refresh log discovery, show
+status/metrics, or remove this repository integration. The main installer
+also offers Crowdsec after the Nginx stage if no decision has been saved.
+
+The script discovers absolute Nginx `access_log` paths from `nginx -T`.
+Nginx variables in paths are converted to glob wildcards, such as
+`$host.access.log` -> `*.access.log`. It skips `off`, syslog destinations,
+relative paths, and unsupported paths. The generated CrowdSec file enables
+`discovery_poll_enable` with a 30-second interval; a systemd timer rechecks
+Nginx configuration every five minutes.
+
+The script installs `crowdsecurity/nginx`, validates with `crowdsec -t`,
+and only then restarts CrowdSec. It always ensures the service is enabled and
+running, even if the acquisition file did not change. The systemd timer calls
+a stable copy at `/opt/fedora-server-setup/crowdsec.sh`, not the original
+checkout path.
+
+Detection only: no bouncer, OPNsense rules, or automatic IP blocking.
+
+Validate before running on the server:
 
 ```bash
-sudo nginx -T 2>&1 | grep -E '^[[:space:]]*access_log[[:space:]]+'
-sudo cat /etc/crowdsec/acquis.d/fedora-server-nginx.yaml
+bash -n scripts/crowdsec.sh
+bash -n scripts/05-nginx.sh
+bash -n install.sh
+git diff --check
+sudo nginx -t
 sudo crowdsec -t
-sudo systemctl status crowdsec
-sudo systemctl status fedora-server-crowdsec-refresh.timer
-sudo cscli metrics
-sudo journalctl -u crowdsec --since "30 minutes ago"
-sudo journalctl -u fedora-server-crowdsec-refresh.service
 ```
 
-## Trusted proxy considerations
-
-If traffic passes through OPNsense, a CDN, or another reverse proxy, confirm
-that Nginx identifies the real client IP correctly. Only explicitly trusted
-proxy addresses should be allowed to supply client IP headers.
-
-Incorrect client-IP handling can cause CrowdSec to attribute requests to the
-proxy rather than the original client, or to trust spoofed addresses.
-
-## Enforcement
-
-Do not enable a bouncer or firewall remediation until detection has been
-validated against real traffic. Test administrative access and allowlists
-before applying any blocking policy.
-
-## Secrets and local state
-
-Do not commit API keys, bouncer credentials, private IP allowlists, or other
-server-specific secrets to this repository.
+Inspect the generated acquisition file and CrowdSec metrics after installation.
