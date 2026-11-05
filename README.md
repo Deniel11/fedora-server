@@ -420,8 +420,19 @@ The integration discovers configured Nginx access log paths dynamically and
 refreshes its acquisition configuration periodically. CrowdSec is initially
 configured for detection only. No bouncer or automatic IP blocking is enabled.
 
-See [README-CROWDSEC.md](README-CROWDSEC.md) for installation, configuration,
-verification, management, and removal instructions.
+The integration tracks hashes for files it manages and refuses to overwrite
+or remove files whose ownership cannot be verified. Configuration changes
+use transaction snapshots, and runtime updates stage the script/parser pair
+with recovery copies. If rollback itself fails, recovery files are retained
+for manual inspection rather than being deleted.
+
+Static checks cover shell syntax, Nginx log discovery, key ownership guards,
+rollback paths, ShellCheck, and whitespace. They do not replace a Fedora
+Server test of package installation, systemd, SELinux, logrotate, and live
+log ingestion.
+
+See [README-CROWDSEC.md](README-CROWDSEC.md) for requirements, behavior,
+permissions, verification, failure recovery, management, and removal.
 
 Run the standalone management menu with:
 

@@ -29,6 +29,10 @@ TX_DIR=
 TX_PATHS=()
 TX_EXISTED=()
 TX_GROUP_ADDED=false
+TX_TIMER_ENABLED=not-found
+TX_TIMER_ACTIVE=unknown
+TX_CROWDSEC_ACTIVE=unknown
+TX_RESTORE_FAILED=false
 
 log() { printf '[CrowdSec] %s\n' "$*"; }
 warn() { printf '[CrowdSec] WARNING: %s\n' "$*" >&2; }
@@ -101,6 +105,9 @@ tx_begin() {
     TX_PATHS=()
     TX_EXISTED=()
     TX_GROUP_ADDED=false
+    TX_TIMER_ENABLED=$(systemctl is-enabled "${SERVICE_NAME}.timer" 2>/dev/null || true)
+    TX_TIMER_ACTIVE=$(systemctl is-active "${SERVICE_NAME}.timer" 2>/dev/null || true)
+    TX_CROWDSEC_ACTIVE=$(systemctl is-active crowdsec 2>/dev/null || true)
     tx_snapshot "$ACQUIS_FILE"
     tx_snapshot "$LOG_TARGETS"
     tx_snapshot "$STATE_FILE"
@@ -108,53 +115,71 @@ tx_begin() {
     tx_snapshot "$INSTALLED_PARSER"
     tx_snapshot "$SERVICE_FILE"
     tx_snapshot "$TIMER_FILE"
-    TX_TIMER_ENABLED=$(systemctl is-enabled "${SERVICE_NAME}.timer" 2>/dev/null || true)
-    TX_TIMER_ACTIVE=$(systemctl is-active "${SERVICE_NAME}.timer" 2>/dev/null || true)
-    TX_CROWDSEC_ACTIVE=$(systemctl is-active crowdsec 2>/dev/null || true)
+}
+
+restore_file_atomically() {
+    local source="$1"
+    local destination="$2"
+    local directory
+    local temporary
+    directory=$(dirname "$destination")
+    install -d "$directory" || return 1
+    temporary=$(mktemp "${directory}/.crowdsec-restore.XXXXXX") || return 1
+    if ! cp -p "$source" "$temporary" || ! mv -f "$temporary" "$destination"; then
+        rm -f "$temporary"
+        return 1
+    fi
 }
 
 tx_snapshot() {
     local path="$1"
-    TX_PATHS+=("$path")
+    local index
     if [[ -e $path || -L $path ]]; then
         [[ ! -L $path && -f $path ]] || die "Refusing to manage a non-regular path: $path"
-        TX_EXISTED+=(true)
-        local index=${#TX_PATHS[@]}
+        index=$((${#TX_PATHS[@]} + 1))
         mkdir -p "${TX_DIR}/${index}"
         cp -p "$path" "${TX_DIR}/${index}/file"
+        TX_PATHS+=("$path")
+        TX_EXISTED+=(true)
     else
+        TX_PATHS+=("$path")
         TX_EXISTED+=(false)
     fi
 }
 
 tx_restore() {
     local i path index
+    TX_RESTORE_FAILED=false
     for ((i=${#TX_PATHS[@]}-1; i>=0; i--)); do
         path=${TX_PATHS[$i]}
         index=$((i+1))
         if [[ ${TX_EXISTED[$i]} == true ]]; then
-            install -d "$(dirname "$path")"
-            cp -p "${TX_DIR}/${index}/file" "$path"
+            restore_file_atomically "${TX_DIR}/${index}/file" "$path" || TX_RESTORE_FAILED=true
         else
-            rm -f "$path"
+            rm -f "$path" || TX_RESTORE_FAILED=true
         fi
     done
-    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl daemon-reload >/dev/null 2>&1 || TX_RESTORE_FAILED=true
     case "$TX_TIMER_ENABLED" in
-        enabled) systemctl enable "${SERVICE_NAME}.timer" >/dev/null 2>&1 || true ;;
-        *) systemctl disable "${SERVICE_NAME}.timer" >/dev/null 2>&1 || true ;;
+        enabled) systemctl enable "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
+        disabled|not-found|"") systemctl disable "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
+        masked) systemctl mask "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
+        masked-runtime) systemctl mask --runtime "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
     esac
     case "$TX_TIMER_ACTIVE" in
-        active) systemctl start "${SERVICE_NAME}.timer" >/dev/null 2>&1 || true ;;
-        *) systemctl stop "${SERVICE_NAME}.timer" >/dev/null 2>&1 || true ;;
+        active) systemctl start "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
+        inactive) systemctl stop "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
+        failed) systemctl stop "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true; systemctl reset-failed "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
     esac
     if [[ $TX_GROUP_ADDED == true ]]; then
-        gpasswd -d crowdsec nginx >/dev/null 2>&1 || true
+        gpasswd -d crowdsec nginx >/dev/null 2>&1 || TX_RESTORE_FAILED=true
     fi
-    if [[ $TX_CROWDSEC_ACTIVE == active ]]; then        systemctl restart crowdsec >/dev/null 2>&1 || true
-    else
-        systemctl stop crowdsec >/dev/null 2>&1 || true
-    fi
+    case "$TX_CROWDSEC_ACTIVE" in
+        active) systemctl restart crowdsec >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
+        inactive) systemctl stop crowdsec >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
+        failed) systemctl stop crowdsec >/dev/null 2>&1 || TX_RESTORE_FAILED=true; systemctl reset-failed crowdsec >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
+    esac
+    [[ $TX_RESTORE_FAILED == false ]]
 }
 
 tx_commit() {
@@ -164,9 +189,13 @@ tx_commit() {
 
 tx_abort() {
     if [[ -n $TX_DIR && -d $TX_DIR ]]; then
-        tx_restore
-        rm -rf "$TX_DIR"
-        TX_DIR=
+        if tx_restore; then
+            rm -rf "$TX_DIR"
+            TX_DIR=
+        else
+            warn "Rollback was incomplete. Recovery files were retained at: $TX_DIR"
+            TX_DIR=
+        fi
     fi
 }
 
@@ -369,8 +398,8 @@ EOF_TIMER
 
 configure() {
     load_state
-    tx_begin
     trap 'tx_abort' EXIT
+    tx_begin
     install -d -o root -g root -m 0700 "$STATE_DIR" || die "Could not create the state directory."
     ensure_log_group_access
     write_acquisition
@@ -453,18 +482,20 @@ sync_runtime() {
         die "Could not replace the CrowdSec runtime script."
     fi
     if ! mv -f "${tmp_dir}/next-parser" "$INSTALLED_PARSER"; then
-        cp -p "${tmp_dir}/previous-script" "$INSTALLED_SCRIPT"
-        cp -p "${tmp_dir}/previous-parser" "$INSTALLED_PARSER"
-        rm -rf "$tmp_dir"
-        die "Could not replace the CrowdSec discovery parser; previous runtime files were restored."
+        if restore_file_atomically "${tmp_dir}/previous-script" "$INSTALLED_SCRIPT" && restore_file_atomically "${tmp_dir}/previous-parser" "$INSTALLED_PARSER"; then
+            rm -rf "$tmp_dir"
+            die "Could not replace the CrowdSec discovery parser; previous runtime files were restored."
+        fi
+        die "Could not replace the CrowdSec discovery parser or restore the previous runtime pair. Recovery files were retained at: $tmp_dir"
     fi
     RUNTIME_SHA256=$(file_hash "$INSTALLED_SCRIPT")
     PARSER_SHA256=$(file_hash "$INSTALLED_PARSER")
     if ! save_state; then
-        cp -p "${tmp_dir}/previous-script" "$INSTALLED_SCRIPT"
-        cp -p "${tmp_dir}/previous-parser" "$INSTALLED_PARSER"
-        rm -rf "$tmp_dir"
-        die "Could not save CrowdSec runtime ownership metadata; previous runtime files were restored."
+        if restore_file_atomically "${tmp_dir}/previous-script" "$INSTALLED_SCRIPT" && restore_file_atomically "${tmp_dir}/previous-parser" "$INSTALLED_PARSER"; then
+            rm -rf "$tmp_dir"
+            die "Could not save CrowdSec runtime ownership metadata; previous runtime files were restored."
+        fi
+        die "Could not save CrowdSec runtime ownership metadata or restore the previous runtime pair. Recovery files were retained at: $tmp_dir"
     fi
     rm -rf "$tmp_dir"
     log "Managed CrowdSec runtime files updated."

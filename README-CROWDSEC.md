@@ -81,6 +81,16 @@ Choose **4) Remove this repository integration** in the CrowdSec menu. Removal d
 
 The complete managed server package removal stops if CrowdSec integration cleanup fails, so the operator can review the remaining files before continuing.
 
+## Failure recovery
+
+Configuration changes are protected by a transaction snapshot. If configuration fails, the integration restores previously managed files through temporary files created beside each destination, then reloads systemd and attempts to restore the recorded timer, service, and group-membership state.
+
+If any rollback operation fails, the transaction backup directory under `/var/tmp/fedora-server-crowdsec-tx.*` is deliberately retained. Review the warning printed by the installer before removing that directory. Do not delete a retained recovery directory until the original files and service state have been checked.
+
+Runtime synchronization stages the script and parser together. If either replacement or ownership-state persistence fails, it restores the previous runtime pair. If restoration itself fails, the staging directory under `/opt/fedora-server-setup/.crowdsec-sync.*` is retained for manual recovery.
+
+The rollback is best-effort across filesystem and systemd operations; it cannot guarantee recovery from power loss, storage failure, or forced termination of the operating system.
+
 ## Validation
 
 Run:
@@ -88,7 +98,20 @@ Run:
 ```bash
 bash -n scripts/crowdsec.sh
 bash tests/test-crowdsec-discovery.sh
+shellcheck --severity=error scripts/crowdsec.sh tests/test-crowdsec-discovery.sh
 git diff --check
 ```
 
-A Fedora test VM is still required before production use. Static tests do not validate package installation, systemd behavior, SELinux policy, logrotate behavior, or real log ingestion.
+The GitHub Actions workflow runs shell syntax checks, the discovery regression test, ShellCheck, and whitespace validation.
+
+A Fedora test VM is still required before production use. Static tests do not validate package installation, systemd behavior, SELinux policy, logrotate behavior, service-account access, or real log ingestion.
+
+Recommended Fedora validation sequence:
+
+1. Install the integration on a disposable Fedora Server VM with host Nginx.
+2. Confirm `crowdsec -t`, `cscli metrics`, and the refresh timer.
+3. Trigger a refresh with a valid configuration and verify that no unnecessary CrowdSec restart occurs.
+4. Introduce a controlled invalid configuration and confirm that managed files and service states are restored.
+5. Verify that a locally modified managed file is retained during update and removal.
+6. Run logrotate and confirm that the CrowdSec service account can read the newly created log files.
+7. Remove the repository integration and confirm that unrelated CrowdSec packages, credentials, collections, and bouncers remain installed.
