@@ -131,6 +131,14 @@ restore_file_atomically() {
     fi
 }
 
+restore_runtime_pair() {
+    local source_dir="$1"
+    local restore_failed=false
+    restore_file_atomically "${source_dir}/previous-script" "$INSTALLED_SCRIPT" || restore_failed=true
+    restore_file_atomically "${source_dir}/previous-parser" "$INSTALLED_PARSER" || restore_failed=true
+    [[ $restore_failed == false ]]
+}
+
 tx_snapshot() {
     local path="$1"
     local index
@@ -162,7 +170,8 @@ tx_restore() {
     systemctl daemon-reload >/dev/null 2>&1 || TX_RESTORE_FAILED=true
     case "$TX_TIMER_ENABLED" in
         enabled) systemctl enable "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
-        disabled|not-found|"") systemctl disable "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
+        disabled) systemctl disable "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
+        not-found|"") ;;
         masked) systemctl mask "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
         masked-runtime) systemctl mask --runtime "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
     esac
@@ -482,7 +491,7 @@ sync_runtime() {
         die "Could not replace the CrowdSec runtime script."
     fi
     if ! mv -f "${tmp_dir}/next-parser" "$INSTALLED_PARSER"; then
-        if restore_file_atomically "${tmp_dir}/previous-script" "$INSTALLED_SCRIPT" && restore_file_atomically "${tmp_dir}/previous-parser" "$INSTALLED_PARSER"; then
+        if restore_runtime_pair "$tmp_dir"; then
             rm -rf "$tmp_dir"
             die "Could not replace the CrowdSec discovery parser; previous runtime files were restored."
         fi
@@ -491,7 +500,7 @@ sync_runtime() {
     RUNTIME_SHA256=$(file_hash "$INSTALLED_SCRIPT")
     PARSER_SHA256=$(file_hash "$INSTALLED_PARSER")
     if ! save_state; then
-        if restore_file_atomically "${tmp_dir}/previous-script" "$INSTALLED_SCRIPT" && restore_file_atomically "${tmp_dir}/previous-parser" "$INSTALLED_PARSER"; then
+        if restore_runtime_pair "$tmp_dir"; then
             rm -rf "$tmp_dir"
             die "Could not save CrowdSec runtime ownership metadata; previous runtime files were restored."
         fi
