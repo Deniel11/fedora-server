@@ -14,6 +14,7 @@ INSTALLED_PARSER="${STACK_DIR}/crowdsec-discovery.awk"
 SERVICE_NAME=fedora-server-crowdsec-refresh
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 TIMER_FILE="/etc/systemd/system/${SERVICE_NAME}.timer"
+RUNTIME_TIMER_FILE="/run/systemd/system/${SERVICE_NAME}.timer"
 LOCK_FILE=/run/lock/fedora-server-crowdsec.lock
 DECISION=unset
 ACQUIS_SHA256=none
@@ -28,6 +29,7 @@ NGINX_GROUP_ADDED=false
 TX_DIR=
 TX_PATHS=()
 TX_EXISTED=()
+TX_LINK_TARGETS=()
 TX_GROUP_ADDED=false
 TX_TIMER_ENABLED=not-found
 TX_TIMER_ACTIVE=unknown
@@ -65,7 +67,7 @@ load_state() {
     NGINX_GROUP_ADDED=false
     if [[ -e $STATE_DIR || -L $STATE_DIR ]]; then
         [[ -d $STATE_DIR && ! -L $STATE_DIR ]] || die "CrowdSec state directory must be a real directory."
-        [[ $(stat -c '%U:%a' "$STATE_DIR") == root:700 ]] || die "CrowdSec state directory must be root-owned with mode 0700."
+        [[ $(stat -c '%U:%a' "$STATE_DIR") == root:700 || $(stat -c '%U:%a' "$STATE_DIR") == root:750 ]] || die "CrowdSec state directory must be root-owned with mode 0700 or 0750."
     fi
     [[ -e $STATE_FILE || -L $STATE_FILE ]] || return 0
     [[ -f $STATE_FILE && ! -L $STATE_FILE ]] || die "CrowdSec state must be a regular non-symlink file."
@@ -104,6 +106,7 @@ tx_begin() {
     TX_DIR=$(mktemp -d /var/tmp/fedora-server-crowdsec-tx.XXXXXX)
     TX_PATHS=()
     TX_EXISTED=()
+    TX_LINK_TARGETS=()
     TX_GROUP_ADDED=false
     TX_TIMER_ENABLED=$(systemctl is-enabled "${SERVICE_NAME}.timer" 2>/dev/null || true)
     TX_TIMER_ACTIVE=$(systemctl is-active "${SERVICE_NAME}.timer" 2>/dev/null || true)
@@ -115,6 +118,7 @@ tx_begin() {
     tx_snapshot "$INSTALLED_PARSER"
     tx_snapshot "$SERVICE_FILE"
     tx_snapshot "$TIMER_FILE"
+    tx_snapshot "$RUNTIME_TIMER_FILE"
 }
 
 restore_file_atomically() {
@@ -143,26 +147,40 @@ tx_snapshot() {
     local path="$1"
     local index
     if [[ -e $path || -L $path ]]; then
-        [[ ! -L $path && -f $path ]] || die "Refusing to manage a non-regular path: $path"
+        if [[ -L $path ]]; then
+            [[ $path == "$TIMER_FILE" || $path == "$RUNTIME_TIMER_FILE" ]] || die "Refusing to manage a non-regular path: $path"
+            TX_PATHS+=("$path")
+            TX_EXISTED+=(true)
+            TX_LINK_TARGETS+=("$(readlink -- "$path")")
+            return 0
+        fi
+        [[ -f $path ]] || die "Refusing to manage a non-regular path: $path"
         index=$((${#TX_PATHS[@]} + 1))
         mkdir -p "${TX_DIR}/${index}"
         cp -p "$path" "${TX_DIR}/${index}/file"
         TX_PATHS+=("$path")
         TX_EXISTED+=(true)
+        TX_LINK_TARGETS+=("")
     else
         TX_PATHS+=("$path")
         TX_EXISTED+=(false)
+        TX_LINK_TARGETS+=("")
     fi
 }
 
 tx_restore() {
-    local i path index
+    local i path index link_target
     TX_RESTORE_FAILED=false
     for ((i=${#TX_PATHS[@]}-1; i>=0; i--)); do
         path=${TX_PATHS[$i]}
         index=$((i+1))
         if [[ ${TX_EXISTED[$i]} == true ]]; then
-            restore_file_atomically "${TX_DIR}/${index}/file" "$path" || TX_RESTORE_FAILED=true
+            link_target=${TX_LINK_TARGETS[$i]}
+            if [[ -n $link_target ]]; then
+                rm -f -- "$path" && ln -s -- "$link_target" "$path" || TX_RESTORE_FAILED=true
+            else
+                restore_file_atomically "${TX_DIR}/${index}/file" "$path" || TX_RESTORE_FAILED=true
+            fi
         else
             rm -f "$path" || TX_RESTORE_FAILED=true
         fi
@@ -175,6 +193,7 @@ tx_restore() {
         not-found|"") ;;
         masked) systemctl mask "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
         masked-runtime) systemctl mask --runtime "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
+        linked|linked-runtime) ;;
     esac
     case "$TX_TIMER_ACTIVE" in
         active) systemctl start "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
