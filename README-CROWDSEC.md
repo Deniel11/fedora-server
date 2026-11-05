@@ -26,6 +26,7 @@ The integration reads `nginx -T`, extracts absolute `access_log` destinations, c
 A systemd timer checks for Nginx log configuration changes every five minutes. Unchanged acquisition configuration does not restart CrowdSec. A lock prevents concurrent manual and timer refreshes. The timer uses a managed runtime copy under `/opt/fedora-server-setup/`.
 
 The updater refreshes the installed CrowdSec runtime files only when their recorded ownership hashes still match. Locally modified runtime files are not overwritten.
+The log-target state file is also protected by ownership metadata. Files with unknown ownership, modified content, or symbolic-link paths are not overwritten or removed. Runtime synchronization stages both files and restores the previous pair if replacement or state persistence fails.
 
 ## Log permissions and rotation
 

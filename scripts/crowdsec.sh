@@ -55,6 +55,7 @@ load_state() {
     TIMER_SHA256=none
     RUNTIME_SHA256=none
     PARSER_SHA256=none
+    LOG_TARGETS_SHA256=none
     LEGACY_STATE=false
     RESTART_PENDING=false
     NGINX_GROUP_ADDED=false
@@ -78,7 +79,6 @@ load_state() {
             CROWDSEC_NGINX_GROUP_ADDED) [[ $value =~ ^(true|false)$ ]] || die "Invalid group metadata."; NGINX_GROUP_ADDED=$value ;;
             CROWDSEC_LEGACY_MIGRATION) [[ $value =~ ^(true|false)$ ]] || die "Invalid migration metadata."; LEGACY_STATE=$value ;;
             CROWDSEC_RESTART_PENDING) [[ $value =~ ^(true|false)$ ]] || die "Invalid restart metadata."; RESTART_PENDING=$value ;;
-            CROWDSEC_NGINX_GROUP_ADDED) [[ $value =~ ^(true|false)$ ]] || die "Invalid group metadata."; NGINX_GROUP_ADDED=$value ;;
             CROWDSEC_MANAGED_INSTALL) [[ $value =~ ^(true|false)$ ]] || die "Invalid legacy installation metadata."; LEGACY_STATE=true ;;
             *) die "Unexpected key in CrowdSec state: $key" ;;
         esac
@@ -208,12 +208,29 @@ check_log_access() {
     [[ $found == true ]] || die "None of the discovered Nginx log patterns currently match a file."
 }
 
+validate_log_targets_ownership() {
+    if [[ -e $LOG_TARGETS || -L $LOG_TARGETS ]]; then
+        [[ -f $LOG_TARGETS && ! -L $LOG_TARGETS ]] || die "Refusing to manage a non-regular log-target state path."
+        [[ $(stat -c '%U' "$LOG_TARGETS") == root ]] || die "Log-target state must be root-owned."
+        local current_hash
+        current_hash=$(file_hash "$LOG_TARGETS")
+        if [[ $LOG_TARGETS_SHA256 != none ]]; then
+            [[ $current_hash == "$LOG_TARGETS_SHA256" ]] || die "Refusing to overwrite log-target state changed outside this integration."
+        elif [[ $LEGACY_STATE == true ]]; then
+            LOG_TARGETS_SHA256=$current_hash
+        else
+            die "Refusing to overwrite log-target state not owned by this integration."
+        fi
+    fi
+}
+
 write_acquisition() {
     command -v crowdsec >/dev/null 2>&1 || die "CrowdSec is not installed."
     command -v cscli >/dev/null 2>&1 || die "cscli is unavailable."
     local discovered
     discovered=$(discover_logs) || die "Nginx log discovery failed."
     [[ -n $discovered ]] || die "No supported absolute Nginx access_log paths were found."
+    validate_log_targets_ownership
     local -a logs=()
     mapfile -t logs <<< "$discovered"
     local existing_hash=none
@@ -420,14 +437,36 @@ sync_runtime() {
     lock_module
     load_state
     [[ $DECISION == installed ]] || return 0
-    [[ $RUNTIME_SHA256 != none && -f $INSTALLED_SCRIPT ]] || die "CrowdSec runtime ownership metadata is incomplete."
+    [[ $RUNTIME_SHA256 != none && -f $INSTALLED_SCRIPT && ! -L $INSTALLED_SCRIPT ]] || die "CrowdSec runtime ownership metadata is incomplete."
     [[ $(file_hash "$INSTALLED_SCRIPT") == "$RUNTIME_SHA256" ]] || die "Refusing to update a runtime script changed outside this integration."
-    [[ -f $INSTALLED_PARSER && $PARSER_SHA256 != none && $(file_hash "$INSTALLED_PARSER") == "$PARSER_SHA256" ]] || die "Refusing to update a discovery parser changed outside this integration."
-    install -o root -g root -m 0750 "$SCRIPT_DIR/crowdsec.sh" "$INSTALLED_SCRIPT"
-    install -o root -g root -m 0644 "$SCRIPT_DIR/crowdsec-discovery.awk" "$INSTALLED_PARSER"
+    [[ -f $INSTALLED_PARSER && ! -L $INSTALLED_PARSER && $PARSER_SHA256 != none && $(file_hash "$INSTALLED_PARSER") == "$PARSER_SHA256" ]] || die "Refusing to update a discovery parser changed outside this integration."
+    local tmp_dir
+    tmp_dir=$(mktemp -d "${STACK_DIR}/.crowdsec-sync.XXXXXX")
+    cp -p "$INSTALLED_SCRIPT" "${tmp_dir}/previous-script"
+    cp -p "$INSTALLED_PARSER" "${tmp_dir}/previous-parser"
+    if ! install -o root -g root -m 0750 "$SCRIPT_DIR/crowdsec.sh" "${tmp_dir}/next-script" || ! install -o root -g root -m 0644 "$SCRIPT_DIR/crowdsec-discovery.awk" "${tmp_dir}/next-parser"; then
+        rm -rf "$tmp_dir"
+        die "Could not stage the updated CrowdSec runtime files."
+    fi
+    if ! mv -f "${tmp_dir}/next-script" "$INSTALLED_SCRIPT"; then
+        rm -rf "$tmp_dir"
+        die "Could not replace the CrowdSec runtime script."
+    fi
+    if ! mv -f "${tmp_dir}/next-parser" "$INSTALLED_PARSER"; then
+        cp -p "${tmp_dir}/previous-script" "$INSTALLED_SCRIPT"
+        cp -p "${tmp_dir}/previous-parser" "$INSTALLED_PARSER"
+        rm -rf "$tmp_dir"
+        die "Could not replace the CrowdSec discovery parser; previous runtime files were restored."
+    fi
     RUNTIME_SHA256=$(file_hash "$INSTALLED_SCRIPT")
     PARSER_SHA256=$(file_hash "$INSTALLED_PARSER")
-    save_state
+    if ! save_state; then
+        cp -p "${tmp_dir}/previous-script" "$INSTALLED_SCRIPT"
+        cp -p "${tmp_dir}/previous-parser" "$INSTALLED_PARSER"
+        rm -rf "$tmp_dir"
+        die "Could not save CrowdSec runtime ownership metadata; previous runtime files were restored."
+    fi
+    rm -rf "$tmp_dir"
     log "Managed CrowdSec runtime files updated."
 }
 
@@ -462,14 +501,17 @@ status() {
 remove_integration() {
     load_state
     local retained=false
-    if [[ -f $ACQUIS_FILE ]]; then
+    if [[ -L $ACQUIS_FILE ]]; then
+        retained=true
+        warn "Acquisition path is a symbolic link and was retained."
+    elif [[ -f $ACQUIS_FILE ]]; then
         if [[ $ACQUIS_SHA256 != none && $(file_hash "$ACQUIS_FILE") == "$ACQUIS_SHA256" ]] || { [[ $LEGACY_STATE == true ]] && grep -Fqx '# Managed by fedora-server CrowdSec module.' "$ACQUIS_FILE"; }; then
             rm -f "$ACQUIS_FILE"
         else
             retained=true
             warn "Acquisition file was changed or is not owned by this integration; it was retained."
         fi
-    elif [[ -e $ACQUIS_FILE || -L $ACQUIS_FILE ]]; then
+    elif [[ -e $ACQUIS_FILE ]]; then
         retained=true
     fi
     if [[ -f $TIMER_FILE ]]; then
@@ -513,13 +555,18 @@ remove_integration() {
             warn "Discovery parser was retained because ownership could not be proven or its service still exists."
         fi
     fi
-    if [[ -f $LOG_TARGETS ]]; then
+    if [[ -L $LOG_TARGETS ]]; then
+        retained=true
+        warn "Log-target state path is a symbolic link and was retained."
+    elif [[ -f $LOG_TARGETS ]]; then
         if [[ $LOG_TARGETS_SHA256 != none && $(file_hash "$LOG_TARGETS") == "$LOG_TARGETS_SHA256" ]]; then
             rm -f "$LOG_TARGETS"
         else
             retained=true
             warn "Log-target state was changed or is not owned by this integration; it was retained."
         fi
+    elif [[ -e $LOG_TARGETS ]]; then
+        retained=true
     fi
     if [[ $NGINX_GROUP_ADDED == true ]] && id -nG crowdsec | tr ' ' '\n' | grep -Fxq nginx; then
         if gpasswd -d crowdsec nginx >/dev/null 2>&1; then

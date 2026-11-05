@@ -31,6 +31,11 @@ bash -n "${ROOT}/scripts/crowdsec.sh"
 grep -Fq "trap 'tx_abort' EXIT" "${ROOT}/scripts/crowdsec.sh"
 grep -Fq "CROWDSEC_LOG_TARGETS_SHA256" "${ROOT}/scripts/crowdsec.sh"
 grep -Fq "CROWDSEC_NGINX_GROUP_ADDED" "${ROOT}/scripts/crowdsec.sh"
+[[ $(grep -c 'CROWDSEC_NGINX_GROUP_ADDED)' "${ROOT}/scripts/crowdsec.sh") -eq 1 ]]
+grep -Fq "validate_log_targets_ownership" "${ROOT}/scripts/crowdsec.sh"
+grep -Fq "Refusing to overwrite log-target state changed outside this integration." "${ROOT}/scripts/crowdsec.sh"
+grep -Fq "Log-target state path is a symbolic link and was retained." "${ROOT}/scripts/crowdsec.sh"
+grep -Fq "previous runtime files were restored" "${ROOT}/scripts/crowdsec.sh"
 grep -Fq -- "--sync-runtime" "${ROOT}/update-repo.sh"
 grep -Fq "CrowdSec integration cleanup failed" "${ROOT}/install.sh"
 [[ $(grep -c 'access_log /var/log/nginx/fedora-server-access.log combined;' "${ROOT}/config/fedora-server.nginx.conf") -eq 2 ]]
