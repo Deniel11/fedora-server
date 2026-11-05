@@ -85,7 +85,7 @@ The complete managed server package removal stops if CrowdSec integration cleanu
 
 Configuration changes are protected by a transaction snapshot. If configuration fails, the integration restores previously managed files through temporary files created beside each destination, then reloads systemd and attempts to restore the recorded timer, service, and group-membership state.
 
-If any rollback operation fails, the transaction backup directory under `/var/tmp/fedora-server-crowdsec-tx.*` is deliberately retained. A timer that did not exist before the transaction is left absent; rollback does not attempt to disable a nonexistent unit. Review the warning printed by the installer before removing that directory. Do not delete a retained recovery directory until the original files and service state have been checked.
+If any rollback operation fails, the transaction backup directory under `/var/tmp/fedora-server-crowdsec-tx.*` is deliberately retained. A timer that did not exist before the transaction is left absent; rollback does not attempt to disable a nonexistent unit. A timer that was enabled only at runtime is restored with `systemctl enable --runtime`, preserving its non-persistent enablement. Review the warning printed by the installer before removing that directory. Do not delete a retained recovery directory until the original files and service state have been checked.
 
 Runtime synchronization stages the script and parser together. If either replacement or ownership-state persistence fails, it attempts to restore both previous files independently, even when restoring the first file fails. If either restoration fails, the staging directory under `/opt/fedora-server-setup/.crowdsec-sync.*` is retained for manual recovery.
 

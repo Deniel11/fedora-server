@@ -42,6 +42,7 @@ grep -Fq 'restore_file_atomically "${source_dir}/previous-script" "$INSTALLED_SC
 grep -Fq 'restore_file_atomically "${source_dir}/previous-parser" "$INSTALLED_PARSER" || restore_failed=true' "${ROOT}/scripts/crowdsec.sh"
 grep -Fq 'disabled) systemctl disable "${SERVICE_NAME}.timer"' "${ROOT}/scripts/crowdsec.sh"
 grep -Fq 'not-found|"") ;;' "${ROOT}/scripts/crowdsec.sh"
+grep -Fq 'enabled-runtime) systemctl enable --runtime "${SERVICE_NAME}.timer"' "${ROOT}/scripts/crowdsec.sh"
 grep -Fq "Rollback was incomplete. Recovery files were retained at:" "${ROOT}/scripts/crowdsec.sh"
 grep -Fq "TX_RESTORE_FAILED" "${ROOT}/scripts/crowdsec.sh"
 grep -Fq "trap 'tx_abort' EXIT" "${ROOT}/scripts/crowdsec.sh"

@@ -170,6 +170,7 @@ tx_restore() {
     systemctl daemon-reload >/dev/null 2>&1 || TX_RESTORE_FAILED=true
     case "$TX_TIMER_ENABLED" in
         enabled) systemctl enable "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
+        enabled-runtime) systemctl enable --runtime "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
         disabled) systemctl disable "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
         not-found|"") ;;
         masked) systemctl mask "${SERVICE_NAME}.timer" >/dev/null 2>&1 || TX_RESTORE_FAILED=true ;;
